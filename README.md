@@ -1,103 +1,123 @@
 # Mobile API Studio
 
-A local-first desktop debugger for inspecting, replaying, mocking, and comparing API traffic from iOS Simulators and Android Emulators.
+A local-first desktop debugger for inspecting, replaying, mocking, correlating, and comparing API traffic from iOS Simulators and Android Emulators.
 
-> Status: planning / pre-alpha. The repository is intentionally private until the first usable capture workflow is stable.
+> **Status:** implementation Phases 0–5 are complete and merged to `main`. The repository remains private and formal testing/CI/final validation are intentionally deferred to the repository owner.
 
-## Product vision
+## What is implemented
 
-Mobile API Studio combines the best parts of a mobile network proxy, an API client, and app-aware debugging into one workflow:
+Mobile API Studio now covers the full planned v0.5 workflow:
 
-1. Discover a booted iOS Simulator or Android Emulator.
-2. Connect it to a capture session.
-3. Inspect HTTP(S) traffic in a searchable timeline.
-4. Promote a captured request into an editable request and replay it.
-5. Mock or alter responses without waiting for backend changes.
-6. Compare iOS and Android behavior for the same endpoint or user flow.
-7. Optionally add a lightweight app SDK for code-level context and pinned-network stacks.
+1. Discover booted iOS Simulators and Android Emulators.
+2. Connect a runtime to a local capture session.
+3. Capture and inspect HTTP(S) traffic in a searchable timeline.
+4. Persist sessions, request/response details, and content-addressed bodies locally.
+5. Copy a secret-redacted cURL command or turn a captured request into an editable Replay draft.
+6. Save reusable requests into collections and resolve local environments, including Keychain-backed secrets.
+7. Mock responses, inject latency/errors, reuse fixtures, and pause request/response breakpoints.
+8. Add optional iOS/Android SDK context such as app, screen, feature, source location, and logs.
+9. Compare two sessions deterministically for missing/extra calls, request/response differences, JSON shape drift, retries, errors, and timing regressions.
+10. Optionally ask an AI provider to explain selected, redacted comparison/flow evidence after an explicit context preview.
 
-The long-term goal is not to become another generic Postman clone. The differentiator is **mobile runtime awareness**: device discovery, one-click connection, capture sessions, app correlation, mobile-specific failure simulation, and cross-platform comparison.
+The product is intentionally not a generic Postman replacement. Its differentiator is **mobile runtime awareness**: device discovery, capture orchestration, app-aware context, failure simulation, and iOS↔Android comparison.
 
-## Primary stack
+## Current stack
 
 - **Desktop shell:** Tauri 2
 - **UI:** React + TypeScript + Vite
-- **Core:** Rust + Tokio
-- **Metadata store:** SQLite
-- **Capture adapter (initial):** mitmproxy/mitmdump sidecar behind a Rust `CaptureEngine` interface
-- **iOS integration:** `xcrun simctl`
-- **Android integration:** ADB + emulator-aware connection strategies
-- **Optional SDKs later:** Swift Package + Kotlin/Android library
+- **Core/runtime:** Rust + Tokio
+- **Metadata:** SQLite
+- **Body storage:** content-addressed SHA-256 file store
+- **Capture:** mitmproxy/mitmdump sidecar behind the Rust `CaptureEngine` boundary
+- **iOS runtime integration:** `xcrun simctl`
+- **Android runtime integration:** ADB
+- **Replay:** native Rust HTTP client
+- **iOS app-aware SDK:** Swift Package
+- **Android app-aware SDK:** Kotlin library + OkHttp interceptor
+- **AI:** provider-neutral Rust interface with OpenAI Responses API implementation
+- **Secrets:** macOS Keychain through the secure-store abstraction
 
-## Development phases
+## Implementation phases
 
-| Phase | Version | Outcome |
-|---|---|---|
-| 0 | Foundation | Repo, architecture, shell, CI, models, local test server |
-| 1 | v0.1 | Detect simulator/emulator, capture HTTP(S), inspect, persist, copy cURL, replay |
-| 2 | v0.2 | Search, filters, sessions, collections, environments, connection diagnostics |
-| 3 | v0.3 | Mock responses, latency/errors, breakpoints, fixture-based testing |
-| 4 | v0.4 | iOS + Android SDKs, app/screen/source correlation, richer traces |
-| 5 | v0.5 | iOS↔Android comparison, schema drift detection, opt-in AI debugging |
+| Phase | Version | Status | Outcome |
+|---|---|---|---|
+| 0 | Foundation | ✅ Merged | Tauri/Rust/React foundation, domain models, SQLite/body storage, capture abstractions |
+| 1 | v0.1 | ✅ Merged | Simulator/emulator discovery, capture, inspect, safe cURL, Replay |
+| 2 | v0.2 | ✅ Merged | Sessions, search, collections, environments, import/export, Connection Doctor |
+| 3 | v0.3 | ✅ Merged | Mock rules, fixtures, latency/errors, request/response breakpoints |
+| 4 | v0.4 | ✅ Merged | Swift/Kotlin SDKs, app context, logs, proxy↔SDK correlation |
+| 5 | v0.5 | ✅ Merged | Session comparison, deterministic diagnostics, optional redacted AI debugging |
 
-See [docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md) for the detailed plan and [docs/ROADMAP.md](docs/ROADMAP.md) for phase gates.
+Formal validation is a separate owner-led stage and has not been performed as part of these implementation phases.
 
-## Core principles
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the phase record and [docs/FINAL_VALIDATION.md](docs/FINAL_VALIDATION.md) for the deferred validation checklist.
 
-- **Local-first:** captured traffic stays on the developer's machine by default.
-- **Safe by default:** secrets are redacted in UI exports and AI payloads unless explicitly revealed.
-- **No pinning bypass feature:** the product does not silently defeat certificate pinning. For apps you control, use the optional SDK or debug network configuration.
-- **Reversible device changes:** proxy/certificate changes must be tracked and restored where technically possible.
-- **Adapter-based architecture:** proxy, device, persistence, replay, mock, and AI capabilities are replaceable components.
-- **Useful before clever:** ship capture/replay before AI or advanced protocol support.
-
-## Planned repository layout
+## As-built repository layout
 
 ```text
 mobile-api-studio/
 ├── apps/
 │   └── desktop/
-│       ├── src/                  # React UI
-│       └── src-tauri/            # Tauri app entrypoint
+│       ├── src/                  # React workspaces and UI
+│       └── src-tauri/            # Tauri commands/orchestration
 ├── crates/
-│   ├── core-model/               # shared domain models
-│   ├── capture-core/             # CaptureEngine interfaces
-│   ├── capture-mitm/             # mitmdump adapter/process bridge
+│   ├── core-model/               # shared capture/workspace models
+│   ├── capture-core/             # CaptureEngine interface
+│   ├── capture-mitm/             # mitmdump process/event bridge
 │   ├── device-ios/               # simctl integration
-│   ├── device-android/           # adb/emulator integration
+│   ├── device-android/           # ADB/emulator integration
 │   ├── storage/                  # SQLite + body store
-│   ├── replay/                   # request replay engine
-│   ├── mock-engine/              # v0.3
-│   └── diff-engine/              # v0.5
+│   ├── replay/                   # native request replay
+│   ├── workspace-core/           # interpolation/diagnostic helpers
+│   ├── secret-store/             # OS credential-store abstraction
+│   ├── mock-core/                # deterministic mock rules
+│   ├── mock-storage/             # mock persistence
+│   ├── mock-fixtures/            # reusable mock fixtures
+│   ├── sdk-protocol/             # versioned app-aware SDK events
+│   ├── sdk-storage/              # SDK event/client persistence
+│   ├── sdk-transport/            # local SDK ingestion server
+│   ├── compare-core/             # deterministic session comparison
+│   ├── ai-core/                  # redaction + provider abstraction
+│   └── ai-storage/               # local AI result history
 ├── sidecars/
-│   └── mitm-addon/               # flow->JSON event bridge
-├── sdk/
-│   ├── ios/                      # v0.4 Swift Package
-│   └── android/                  # v0.4 Kotlin library
-├── fixtures/
-│   └── test-server/              # deterministic local APIs
-├── docs/
-└── .github/
+│   └── mitm-addon/               # mitmproxy capture/mock/breakpoint bridge
+├── sdks/
+│   ├── ios/                      # Swift Package
+│   └── android/                  # Kotlin/OkHttp library + sample
+├── samples/
+│   └── ios-sdk-demo/             # iOS SDK sample integration
+└── docs/
 ```
 
-## First milestone
+## Core principles
 
-The first meaningful demo is deliberately small:
-
-> Launch Mobile API Studio → select a booted simulator/emulator → connect → open a sample app → see requests arrive → select one request → view headers/body/timings → copy a redacted cURL → edit and replay the request.
-
-No mocking, AI, GraphQL tooling, team sync, or production-device support is required for v0.1.
+- **Local-first:** capture sessions and debugging data stay on the developer machine by default.
+- **Safe by default:** secret headers, internal correlation metadata, and configured secret keys are redacted from exports and AI context.
+- **Explicit AI boundary:** AI is optional; the user previews the sanitized context before an external request is allowed.
+- **No pinning bypass feature:** pinned clients require an app-owned debug configuration or the optional SDK path.
+- **Reversible mutations:** device/proxy changes are journaled and rolled back where the selected strategy changes them.
+- **Adapter boundaries:** capture, device, replay, mocks, SDK transport, comparison, secure storage, and AI providers remain replaceable components.
+- **Deterministic before AI:** comparisons and diagnostics are computed locally first; AI explains evidence rather than becoming the source of truth.
 
 ## Documentation
 
-- [Detailed implementation plan](docs/IMPLEMENTATION_PLAN.md)
+- [Implementation record](docs/IMPLEMENTATION_PLAN.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Roadmap and phase gates](docs/ROADMAP.md)
+- [Roadmap and phase status](docs/ROADMAP.md)
+- [Final owner-led validation](docs/FINAL_VALIDATION.md)
 - [Security and privacy](docs/SECURITY_AND_PRIVACY.md)
-- [Issue backlog](docs/ISSUE_BACKLOG.md)
+- [SDK integration](docs/SDK_INTEGRATION.md)
+- [AI privacy and providers](docs/AI_PRIVACY_AND_PROVIDERS.md)
+- [Issue backlog / implementation history](docs/ISSUE_BACKLOG.md)
 - [Research notes](docs/RESEARCH_NOTES.md)
 - [ADRs](docs/adr/)
 
+## Current next step
+
+The planned product implementation is complete through v0.5. The next project stage is **independent final validation by the repository owner**: build/run the desktop app, exercise supported iOS/Android workflows, record defects, and fix only issues discovered during that validation cycle.
+
+No automated test or CI program is being introduced automatically as part of this documentation refresh.
+
 ## License
 
-No public license has been selected yet. Keep the repository private until that decision is made.
+No public license has been selected yet. The repository remains private until that decision and the release/security review are complete.
