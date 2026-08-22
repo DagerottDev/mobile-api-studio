@@ -21,6 +21,7 @@ core-model = { path = "../../../crates/core-model" }
 device-android = { path = "../../../crates/device-android" }
 device-ios = { path = "../../../crates/device-ios" }
 mock-core = { path = "../../../crates/mock-core" }
+mock-fixtures = { path = "../../../crates/mock-fixtures" }
 mock-storage = { path = "../../../crates/mock-storage" }
 replay = { path = "../../../crates/replay" }
 secret-store = { path = "../../../crates/secret-store" }
