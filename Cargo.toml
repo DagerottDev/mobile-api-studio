@@ -17,6 +17,7 @@ members = [
   "crates/sdk-protocol",
   "crates/sdk-storage",
   "crates/sdk-transport",
+  "crates/compare-core",
 ]
 
 [workspace.package]
