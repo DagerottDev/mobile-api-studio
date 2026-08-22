@@ -209,7 +209,7 @@ impl Database {
             })
         })?;
 
-        rows.collect::<Result<Vec<_>, _>().map_err(StorageError::from)
+        rows.collect::<Result<Vec<_>, _>>().map_err(StorageError::from)
     }
 
     pub fn upsert_flow(&self, flow: &FlowSummary) -> Result<(), StorageError> {
@@ -302,7 +302,7 @@ impl Database {
             })
         })?;
 
-        rows.collect::<Result<Vec<_>, _>().map_err(StorageError::from)
+        rows.collect::<Result<Vec<_>, _>>().map_err(StorageError::from)
     }
 
     pub fn is_empty(&self) -> Result<bool, StorageError> {
