@@ -146,3 +146,29 @@ export interface BodyPayload {
   text: string | null;
   base64: string | null;
 }
+
+export interface ReplayHeaderDraft {
+  name: string;
+  value: string | null;
+  sensitive: boolean;
+  useOriginal: boolean;
+  enabled: boolean;
+  sourceIndex: number | null;
+}
+
+export interface ReplayBodyDraft {
+  text: string | null;
+  base64: string | null;
+  isBinary: boolean;
+  contentType: string | null;
+  useOriginal: boolean;
+  sourceTruncated: boolean;
+}
+
+export interface ReplayDraft {
+  sourceFlowId: string;
+  method: string;
+  url: string;
+  headers: ReplayHeaderDraft[];
+  body: ReplayBodyDraft | null;
+}
