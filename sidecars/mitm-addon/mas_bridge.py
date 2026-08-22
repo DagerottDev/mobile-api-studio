@@ -27,7 +27,9 @@ def _headers(headers) -> list[dict]:
     ]
 
 
-def _is_binary(content_type: str | None) -> bool:
+def _is_binary(content_type: str | None, encoding: str | None) -> bool:
+    if encoding and encoding.lower() not in ("identity", ""):
+        return True
     if not content_type:
         return True
     normalized = content_type.lower()
@@ -51,7 +53,7 @@ def _body(raw_content: bytes | None, content_type: str | None, encoding: str | N
         "data_base64": base64.b64encode(captured).decode("ascii"),
         "content_type": content_type,
         "encoding": encoding,
-        "is_binary": _is_binary(content_type),
+        "is_binary": _is_binary(content_type, encoding),
         "is_truncated": is_truncated,
     }
 
