@@ -68,7 +68,7 @@ impl IosDeviceProvider {
                     state: state.to_string(),
                     capabilities: DeviceCapabilities {
                         can_install_ca: true,
-                        can_auto_route_proxy: cfg!(target_os = "macos"),
+                        can_auto_route_proxy: false,
                         can_target_process: false,
                     },
                 });
