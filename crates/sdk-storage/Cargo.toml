@@ -1,0 +1,12 @@
+[package]
+name = "sdk-storage"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+sdk-protocol = { path = "../sdk-protocol" }
+serde.workspace = true
+serde_json.workspace = true
