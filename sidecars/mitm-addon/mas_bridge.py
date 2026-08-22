@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import os
+import time
 from urllib.parse import urlsplit
 
 from mitmproxy import ctx, http
@@ -9,6 +10,8 @@ from mitmproxy import ctx, http
 EVENT_PREFIX = "MAS_EVENT "
 SESSION_ID = os.environ.get("MAS_SESSION_ID")
 MAX_BODY_BYTES = int(os.environ.get("MAS_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+BREAKPOINT_TIMEOUT_MS = int(os.environ.get("MAS_BREAKPOINT_TIMEOUT_MS", "60000"))
+BREAKPOINT_POLL_MS = max(25, int(os.environ.get("MAS_BREAKPOINT_POLL_MS", "100")))
 _RULES_MTIME_NS: int | None = None
 _RULES_DOCUMENT: dict = {"enabled": True, "rules": []}
 
@@ -61,6 +64,19 @@ def _body(raw_content: bytes | None, content_type: str | None, encoding: str | N
     }
 
 
+def _breakpoint_body(raw_content: bytes | None, content_type: str | None, encoding: str | None) -> dict | None:
+    if raw_content is None:
+        return None
+    is_truncated = len(raw_content) > MAX_BODY_BYTES
+    captured = raw_content[:MAX_BODY_BYTES]
+    return {
+        "dataBase64": base64.b64encode(captured).decode("ascii"),
+        "contentType": content_type,
+        "isBinary": _is_binary(content_type, encoding),
+        "isTruncated": is_truncated,
+    }
+
+
 def _duration_ms(start: float | None, end: float | None) -> int | None:
     if start is None or end is None or end < start:
         return None
@@ -72,6 +88,26 @@ def _rules_path() -> str:
     if override:
         return override
     return os.path.join(str(ctx.options.confdir), "mock-rules.json")
+
+
+def _breakpoint_root() -> str:
+    return os.path.join(str(ctx.options.confdir), "breakpoints")
+
+
+def _breakpoint_pending_dir() -> str:
+    return os.path.join(_breakpoint_root(), "pending")
+
+
+def _breakpoint_decision_dir() -> str:
+    return os.path.join(_breakpoint_root(), "decisions")
+
+
+def _atomic_json(path: str, payload: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temporary = path + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, separators=(",", ":"))
+    os.replace(temporary, path)
 
 
 def _rules() -> list[dict]:
@@ -124,6 +160,8 @@ def _dynamic_segment(segment: str) -> bool:
         hyphens = {8, 13, 18, 23}
         if all((char == "-" if index in hyphens else char in "0123456789abcdef") for index, char in enumerate(lower)):
             return True
+    if len(lower) >= 16 and all(char in "0123456789abcdef" for char in lower):
+        return True
     return len(lower) >= 20 and all(char.isalnum() or char in "-_" for char in lower)
 
 
@@ -155,11 +193,172 @@ def _mark_mock(flow: http.HTTPFlow, rule: dict) -> None:
     flow.metadata["mas_mock_rule_name"] = rule.get("name")
 
 
+def _breakpoint_envelope(flow: http.HTTPFlow, rule: dict, stage: str, breakpoint_id: str) -> dict:
+    request = flow.request
+    response = flow.response
+    now_ms = int(time.time() * 1000)
+    if stage == "response" and response is not None:
+        headers = _headers(response.headers)
+        body = _breakpoint_body(
+            response.raw_content,
+            response.headers.get("content-type"),
+            response.headers.get("content-encoding"),
+        )
+        status_code = response.status_code
+    else:
+        headers = _headers(request.headers)
+        body = _breakpoint_body(
+            request.raw_content,
+            request.headers.get("content-type"),
+            request.headers.get("content-encoding"),
+        )
+        status_code = None
+
+    return {
+        "schemaVersion": 1,
+        "id": breakpoint_id,
+        "flowId": flow.id,
+        "ruleId": str(rule.get("id") or ""),
+        "ruleName": str(rule.get("name") or "Mock rule"),
+        "stage": stage,
+        "createdAt": str(now_ms),
+        "deadlineAt": str(now_ms + BREAKPOINT_TIMEOUT_MS),
+        "method": request.method,
+        "url": request.url,
+        "headers": headers,
+        "body": body,
+        "statusCode": status_code,
+    }
+
+
+async def _wait_for_breakpoint(flow: http.HTTPFlow, rule: dict, stage: str) -> dict | None:
+    breakpoint_id = f"{flow.id}-{stage}-{int(time.time() * 1000)}"
+    pending_path = os.path.join(_breakpoint_pending_dir(), breakpoint_id + ".json")
+    decision_path = os.path.join(_breakpoint_decision_dir(), breakpoint_id + ".json")
+    try:
+        _atomic_json(pending_path, _breakpoint_envelope(flow, rule, stage, breakpoint_id))
+    except OSError as exc:
+        _emit({
+            "type": "mock_rules_failed",
+            "code": "breakpoint_publish_failed",
+            "message": str(exc),
+            "rule_id": rule.get("id"),
+        })
+        return None
+
+    deadline = time.monotonic() + max(1, BREAKPOINT_TIMEOUT_MS) / 1000.0
+    try:
+        while time.monotonic() < deadline:
+            if os.path.isfile(decision_path):
+                try:
+                    with open(decision_path, "r", encoding="utf-8") as handle:
+                        return json.load(handle)
+                except (OSError, json.JSONDecodeError) as exc:
+                    _emit({
+                        "type": "mock_rules_failed",
+                        "code": "breakpoint_decision_invalid",
+                        "message": str(exc),
+                        "rule_id": rule.get("id"),
+                    })
+                    return None
+                finally:
+                    try:
+                        os.remove(decision_path)
+                    except FileNotFoundError:
+                        pass
+            await asyncio.sleep(BREAKPOINT_POLL_MS / 1000.0)
+        return None
+    finally:
+        try:
+            os.remove(pending_path)
+        except FileNotFoundError:
+            pass
+
+
+def _decode_breakpoint_body(body: dict | None) -> bytes | None:
+    if body is None:
+        return None
+    return base64.b64decode(str(body.get("dataBase64") or ""))
+
+
+def _replace_headers(headers, rows: list[dict] | None) -> None:
+    if rows is None:
+        return
+    headers.clear()
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        if not name:
+            continue
+        headers.add(name, str(row.get("value") or ""))
+
+
+def _apply_request_breakpoint_decision(flow: http.HTTPFlow, decision: dict | None) -> bool:
+    if not decision:
+        return True
+    if decision.get("action") == "cancel":
+        flow.kill()
+        return False
+
+    method = decision.get("method")
+    if method:
+        flow.request.method = str(method).upper()
+    url = decision.get("url")
+    if url:
+        flow.request.url = str(url)
+    _replace_headers(flow.request.headers, decision.get("headers"))
+    if decision.get("clearBody", False):
+        flow.request.raw_content = b""
+    elif decision.get("body") is not None:
+        try:
+            flow.request.raw_content = _decode_breakpoint_body(decision.get("body"))
+        except (ValueError, TypeError) as exc:
+            _emit({
+                "type": "mock_rules_failed",
+                "code": "breakpoint_request_body_invalid",
+                "message": str(exc),
+                "rule_id": flow.metadata.get("mas_mock_rule_id"),
+            })
+    return True
+
+
+def _apply_response_breakpoint_decision(flow: http.HTTPFlow, decision: dict | None) -> bool:
+    if not decision:
+        return True
+    if decision.get("action") == "cancel":
+        flow.kill()
+        return False
+    if flow.response is None:
+        return True
+
+    status_code = decision.get("statusCode")
+    if status_code is not None:
+        flow.response.status_code = int(status_code)
+    _replace_headers(flow.response.headers, decision.get("headers"))
+    if decision.get("clearBody", False):
+        flow.response.raw_content = b""
+    elif decision.get("body") is not None:
+        try:
+            flow.response.raw_content = _decode_breakpoint_body(decision.get("body"))
+        except (ValueError, TypeError) as exc:
+            _emit({
+                "type": "mock_rules_failed",
+                "code": "breakpoint_response_body_invalid",
+                "message": str(exc),
+                "rule_id": flow.metadata.get("mas_mock_rule_id"),
+            })
+    return True
+
+
 async def request(flow: http.HTTPFlow) -> None:
     rule = _matching_rule(flow)
     if rule is None:
         return
     _mark_mock(flow, rule)
+
+    if rule.get("requestBreakpoint", False):
+        decision = await _wait_for_breakpoint(flow, rule, "request")
+        if not _apply_request_breakpoint_decision(flow, decision):
+            return
 
     failure_mode = rule.get("failureMode", "none")
     if failure_mode == "drop":
@@ -279,6 +478,14 @@ async def response(flow: http.HTTPFlow) -> None:
                 })
         _apply_header_mutations(response, rule.get("responseHeaders") or [])
         _apply_json_mutations(flow, rule.get("jsonMutations") or [])
+
+        if rule.get("responseBreakpoint", False):
+            decision = await _wait_for_breakpoint(flow, rule, "response")
+            if not _apply_response_breakpoint_decision(flow, decision):
+                return
+            response = flow.response
+            if response is None:
+                return
 
     parsed = urlsplit(request.url)
     response_size = len(response.raw_content) if response.raw_content is not None else None
