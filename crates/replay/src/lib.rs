@@ -195,7 +195,12 @@ impl ReplayError {
 fn should_skip_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
-        "host" | "content-length" | "transfer-encoding" | "connection" | "proxy-connection"
+        "host"
+            | "content-length"
+            | "transfer-encoding"
+            | "connection"
+            | "proxy-connection"
+            | "x-mobile-api-studio-request-id"
     )
 }
 
