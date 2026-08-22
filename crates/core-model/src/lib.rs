@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA_VERSION: u16 = 1;
+pub const PROJECT_BUNDLE_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -18,6 +19,7 @@ pub enum SessionStatus {
     Active,
     Completed,
     Interrupted,
+    Archived,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,6 +172,168 @@ pub struct FlowDetail {
     pub timing: Timing,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NormalizedEndpoint {
+    pub key: String,
+    pub method: String,
+    pub host: String,
+    pub path_template: String,
+}
+
+pub fn normalize_endpoint(method: &str, host: &str, path: &str) -> NormalizedEndpoint {
+    let clean_path = path.split('?').next().unwrap_or(path);
+    let path_template = clean_path
+        .split('/')
+        .map(normalize_path_segment)
+        .collect::<Vec<_>>()
+        .join("/");
+    let method = method.trim().to_uppercase();
+    let host = host.trim().to_lowercase();
+    NormalizedEndpoint {
+        key: format!("{} {}{}", method, host, path_template),
+        method,
+        host,
+        path_template,
+    }
+}
+
+fn normalize_path_segment(segment: &str) -> &str {
+    if segment.is_empty() {
+        return segment;
+    }
+    if segment.bytes().all(|byte| byte.is_ascii_digit()) {
+        return ":id";
+    }
+    if looks_like_uuid(segment) {
+        return ":uuid";
+    }
+    if segment.len() >= 16 && segment.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return ":hex";
+    }
+    segment
+}
+
+fn looks_like_uuid(value: &str) -> bool {
+    if value.len() != 36 {
+        return false;
+    }
+    value.bytes().enumerate().all(|(index, byte)| match index {
+        8 | 13 | 18 | 23 => byte == b'-',
+        _ => byte.is_ascii_hexdigit(),
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedCollection {
+    pub schema_version: u16,
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedRequestBody {
+    pub text: Option<String>,
+    pub base64: Option<String>,
+    pub content_type: Option<String>,
+    pub is_binary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedRequest {
+    pub schema_version: u16,
+    pub id: String,
+    pub collection_id: String,
+    pub name: String,
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<HeaderValue>,
+    pub body: Option<SavedRequestBody>,
+    pub source_flow_id: Option<String>,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Environment {
+    pub schema_version: u16,
+    pub id: String,
+    pub name: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentVariable {
+    pub schema_version: u16,
+    pub id: String,
+    pub environment_id: String,
+    pub key: String,
+    pub value: Option<String>,
+    pub is_secret: bool,
+    pub secret_ref: Option<String>,
+    pub enabled: bool,
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficSearchQuery {
+    pub text: Option<String>,
+    pub session_id: Option<String>,
+    pub source: Option<FlowSource>,
+    pub method: Option<String>,
+    pub status_class: Option<u16>,
+    pub endpoint_key: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficSearchResult {
+    pub flow: FlowSummary,
+    pub endpoint: NormalizedEndpoint,
+    pub session_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppPreference {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OnboardingStep {
+    pub key: String,
+    pub completed: bool,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectBundle {
+    pub bundle_version: u16,
+    pub exported_at: String,
+    pub sessions: Vec<CaptureSession>,
+    pub collections: Vec<SavedCollection>,
+    pub saved_requests: Vec<SavedRequest>,
+    pub environments: Vec<Environment>,
+    pub environment_variables: Vec<EnvironmentVariable>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
