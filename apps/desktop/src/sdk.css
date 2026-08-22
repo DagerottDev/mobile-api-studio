@@ -27,7 +27,8 @@
 .sdk-setup-grid span,
 .sdk-client-row small,
 .sdk-event-row small,
-.sdk-client-header p {
+.sdk-client-header p,
+.sdk-session-strip small {
   opacity: .58;
   font-size: 11px;
 }
@@ -40,6 +41,28 @@
 }
 
 .sdk-note { padding: 0 14px 14px; margin: 0; }
+
+.sdk-session-strip {
+  border-top: 1px solid var(--border, #303744);
+  padding: 12px 14px 14px;
+  display: grid;
+  gap: 9px;
+}
+
+.sdk-session-strip > strong { font-size: 12px; }
+.sdk-session-strip > div { display: flex; gap: 8px; flex-wrap: wrap; }
+.sdk-session-strip > div > span {
+  display: grid;
+  gap: 2px;
+  min-width: 190px;
+  max-width: 320px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #303744);
+  border-radius: 8px;
+  background: rgba(255,255,255,.025);
+}
+.sdk-session-strip b,
+.sdk-session-strip small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .sdk-client-layout {
   display: grid;
