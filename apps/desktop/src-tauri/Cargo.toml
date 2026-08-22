@@ -17,6 +17,7 @@ tauri-build = { version = "2", features = [] }
 base64.workspace = true
 capture-core = { path = "../../../crates/capture-core" }
 capture-mitm = { path = "../../../crates/capture-mitm" }
+compare-core = { path = "../../../crates/compare-core" }
 core-model = { path = "../../../crates/core-model" }
 device-android = { path = "../../../crates/device-android" }
 device-ios = { path = "../../../crates/device-ios" }
