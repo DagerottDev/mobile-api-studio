@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { ConnectView } from "./components/ConnectView";
 import { MocksView } from "./components/MocksView";
+import { MockUtilitiesView } from "./components/MockUtilitiesView";
 import { ReplayView } from "./components/ReplayView";
 import { SettingsView } from "./components/SettingsView";
 import { SidecarSettingsPanel } from "./components/SidecarSettingsPanel";
@@ -88,7 +89,7 @@ function App() {
                   : route === "Replay"
                     ? "Edit and resend captured or saved requests"
                     : route === "Mocks"
-                      ? "Override mobile API responses and failure behavior locally"
+                      ? "Override responses, reuse fixtures, and pause live mobile API calls"
                       : route === "Workspace"
                         ? "Manage sessions, saved requests, and environments"
                         : "Connection Doctor, onboarding, backup, restore, and capture setup"}
@@ -99,7 +100,7 @@ function App() {
         {route === "Connect" ? <ConnectView /> : null}
         {route === "Traffic" ? <TrafficView /> : null}
         {route === "Replay" ? <ReplayView savedRequestId={replaySavedRequestId} /> : null}
-        {route === "Mocks" ? <MocksView /> : null}
+        {route === "Mocks" ? <div className="mocks-page-stack"><MocksView /><MockUtilitiesView /></div> : null}
         {route === "Workspace" ? <WorkspaceView onOpenReplay={openSavedRequest} /> : null}
         {route === "Settings" ? (
           <>
