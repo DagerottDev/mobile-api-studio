@@ -31,13 +31,30 @@ pub struct CaptureHandle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureLifecycleState {
+    Idle,
+    Preparing,
+    Starting,
+    Ready,
+    Stopping,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum CaptureEvent {
+    LifecycleChanged(CaptureLifecycleState),
     EngineReady(CaptureCapabilities),
     FlowStarted(FlowSummary),
     FlowUpdated(FlowSummary),
     FlowCompleted(FlowSummary),
     FlowFailed { flow_id: String, code: String, message: String },
+    EngineFailed {
+        code: String,
+        message: String,
+        recoverable: bool,
+    },
     EngineStopped,
 }
 
