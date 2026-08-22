@@ -24,6 +24,9 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": false,
+    "resources": [
+      "../../../sidecars/mitm-addon/mas_bridge.py"
+    ]
   }
 }
