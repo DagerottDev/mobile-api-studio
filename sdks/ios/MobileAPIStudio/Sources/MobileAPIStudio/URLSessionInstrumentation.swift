@@ -6,7 +6,7 @@ public final class MobileAPIStudioURLProtocol: URLProtocol, @unchecked Sendable 
     private var requestID: String?
 
     public override class func canInit(with request: URLRequest) -> Bool {
-        guard MobileAPIStudio.defaultEnabled || request.value(forHTTPHeaderField: MobileAPIStudio.correlationHeader) != nil,
+        guard MobileAPIStudio.isEnabled,
               let url = request.url,
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
