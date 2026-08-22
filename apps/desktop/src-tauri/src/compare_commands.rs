@@ -34,7 +34,10 @@ pub fn session_diagnostics(
     Ok(diagnose_session(&snapshot))
 }
 
-fn build_snapshot(session_id: &str, state: &State<'_, AppState>) -> Result<SessionSnapshot, AppError> {
+pub(super) fn build_snapshot(
+    session_id: &str,
+    state: &State<'_, AppState>,
+) -> Result<SessionSnapshot, AppError> {
     let session = state
         .database
         .list_sessions(10_000)
@@ -69,7 +72,7 @@ fn build_snapshot(session_id: &str, state: &State<'_, AppState>) -> Result<Sessi
     Ok(SessionSnapshot { session, flows })
 }
 
-fn body_for_compare(
+pub(super) fn body_for_compare(
     reference: Option<&BodyRef>,
     state: &State<'_, AppState>,
 ) -> Result<Option<ComparableBody>, AppError> {
@@ -88,7 +91,7 @@ fn body_for_compare(
     }))
 }
 
-fn sdk_context_for_detail(
+pub(super) fn sdk_context_for_detail(
     detail: &FlowDetail,
     state: &State<'_, AppState>,
 ) -> Result<Option<AppContextEvidence>, AppError> {
