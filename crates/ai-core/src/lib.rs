@@ -218,6 +218,9 @@ fn redact_value(
             if looks_like_header_object(object) {
                 return redact_header_object(object, policy, secret_keys, redactions);
             }
+            if looks_like_named_difference(object) {
+                return redact_named_difference(object, policy, secret_keys, redactions);
+            }
             let mut next = Map::new();
             for (key, child) in object {
                 let normalized_key = normalize_secret_key(key);
@@ -244,6 +247,12 @@ fn redact_value(
             }).collect())
         }
         Value::String(text) => {
+            if parent_key.is_some_and(|key| key.eq_ignore_ascii_case("query")) {
+                return Value::String(redact_query(text, secret_keys, redactions));
+            }
+            if parent_key.is_some_and(|key| key.eq_ignore_ascii_case("url")) {
+                return Value::String(redact_url(text, secret_keys, redactions));
+            }
             if let Ok(parsed) = serde_json::from_str::<Value>(text) {
                 if matches!(parsed, Value::Object(_) | Value::Array(_)) {
                     let nested = redact_value(&parsed, policy, secret_keys, redactions, parent_key);
@@ -269,7 +278,7 @@ fn redact_header_object(
         return json!({"name": "<internal-header-omitted>", "value": "<omitted>"});
     }
     let sensitive_flag = object.get("sensitive").and_then(Value::as_bool).unwrap_or(false);
-    let sensitive_name = is_sensitive_header(name);
+    let sensitive_name = is_sensitive_header(name) || secret_keys.contains(&normalize_secret_key(name));
     let mut next = Map::new();
     for (key, child) in object {
         if key.eq_ignore_ascii_case("value") && (sensitive_flag || sensitive_name) {
@@ -282,9 +291,36 @@ fn redact_header_object(
     Value::Object(next)
 }
 
+fn redact_named_difference(
+    object: &Map<String, Value>,
+    policy: &AiContextPolicy,
+    secret_keys: &HashSet<String>,
+    redactions: &mut usize,
+) -> Value {
+    let name = header_name(object).unwrap_or_default();
+    let secret_name = is_sensitive_header(name)
+        || is_internal_header(name)
+        || secret_keys.contains(&normalize_secret_key(name));
+    let mut next = Map::new();
+    for (key, child) in object {
+        if secret_name && (key.eq_ignore_ascii_case("baseline") || key.eq_ignore_ascii_case("candidate")) {
+            *redactions += 1;
+            next.insert(key.clone(), json!(["<redacted>"]));
+        } else {
+            next.insert(key.clone(), redact_value(child, policy, secret_keys, redactions, Some(key)));
+        }
+    }
+    Value::Object(next)
+}
+
 fn looks_like_header_object(object: &Map<String, Value>) -> bool {
+    object.get("name").and_then(Value::as_str).is_some() && object.contains_key("value")
+}
+
+fn looks_like_named_difference(object: &Map<String, Value>) -> bool {
     object.get("name").and_then(Value::as_str).is_some()
-        && object.contains_key("value")
+        && object.contains_key("baseline")
+        && object.contains_key("candidate")
 }
 
 fn header_name(object: &Map<String, Value>) -> Option<&str> {
@@ -309,10 +345,42 @@ fn is_sensitive_header(name: &str) -> bool {
     )
 }
 
+fn redact_url(value: &str, secret_keys: &HashSet<String>, redactions: &mut usize) -> String {
+    let Some((prefix, suffix)) = value.split_once('?') else { return truncate_string(value, 12_000) };
+    let (query, fragment) = suffix
+        .split_once('#')
+        .map_or((suffix, None), |(query, fragment)| (query, Some(fragment)));
+    let sanitized = redact_query(query, secret_keys, redactions);
+    match fragment {
+        Some(fragment) => format!("{prefix}?{sanitized}#{fragment}"),
+        None => format!("{prefix}?{sanitized}"),
+    }
+}
+
+fn redact_query(value: &str, secret_keys: &HashSet<String>, redactions: &mut usize) -> String {
+    value
+        .split('&')
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            if secret_keys.contains(&normalize_secret_key(key)) {
+                *redactions += 1;
+                format!("{key}=<redacted>")
+            } else if pair.contains('=') {
+                format!("{key}={value}")
+            } else {
+                key.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 fn normalize_secret_key(key: &str) -> String {
     key.trim()
         .to_ascii_lowercase()
-        .replace(['-', ' ', '.'], "_")
+        .chars()
+        .map(|character| if matches!(character, '-' | ' ' | '.') { '_' } else { character })
+        .collect()
 }
 
 fn truncate_string(value: &str, max_chars: usize) -> String {
