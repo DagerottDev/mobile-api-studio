@@ -226,6 +226,13 @@
   gap: 3px;
 }
 
+.saved-request-row .saved-request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .saved-request-row small {
   opacity: .55;
   overflow: hidden;
@@ -282,4 +289,6 @@
   .workspace-list-pane { border-right: 0; border-bottom: 1px solid var(--border, #242a35); }
   .workspace-item-list { max-height: 260px; }
   .variable-create-grid { grid-template-columns: 1fr 1fr; }
+  .saved-request-row { grid-template-columns: auto minmax(0, 1fr); }
+  .saved-request-row .saved-request-actions { grid-column: 1 / -1; justify-content: flex-start; }
 }
