@@ -1,9 +1,10 @@
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use capture_core::{
     CaptureCapabilities, CaptureConfig, CaptureEngine, CaptureError, CaptureEvent, CaptureHandle,
-    CaptureLifecycleState,
+    CaptureLifecycleState, CapturedBody, CapturedFlow, CapturedRequest, CapturedResponse,
 };
-use core_model::{FlowSource, FlowSummary, SCHEMA_VERSION};
+use core_model::{FlowSource, FlowSummary, HeaderValue, Timing, SCHEMA_VERSION};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
@@ -87,7 +88,7 @@ impl MitmDumpEngine {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(_line)) = lines.next_line().await {
                 // Keep stderr drained so the child cannot block on a full pipe.
-                // Structured runtime diagnostics are emitted by the bridge itself.
+                // Structured flow diagnostics are emitted by the bridge itself.
             }
         });
     }
@@ -246,19 +247,61 @@ impl CaptureEngine for MitmDumpEngine {
 enum BridgeEvent {
     FlowCompleted {
         id: String,
-        method: String,
-        host: String,
-        path: String,
-        status_code: u16,
-        duration_ms: Option<u64>,
-        response_size_bytes: Option<u64>,
         started_at: String,
+        response_size_bytes: Option<u64>,
+        request: BridgeRequest,
+        response: BridgeResponse,
+        timing: BridgeTiming,
     },
     FlowFailed {
         id: String,
         code: String,
         message: String,
     },
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeHeader {
+    name: String,
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeBody {
+    data_base64: String,
+    content_type: Option<String>,
+    encoding: Option<String>,
+    is_binary: bool,
+    is_truncated: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeRequest {
+    method: String,
+    url: String,
+    scheme: String,
+    host: String,
+    port: Option<u16>,
+    path: String,
+    query: Option<String>,
+    headers: Vec<BridgeHeader>,
+    body: Option<BridgeBody>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeResponse {
+    status_code: u16,
+    reason: Option<String>,
+    headers: Vec<BridgeHeader>,
+    body: Option<BridgeBody>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeTiming {
+    request_ms: Option<u64>,
+    server_ms: Option<u64>,
+    download_ms: Option<u64>,
+    total_ms: Option<u64>,
 }
 
 fn publish_bridge_event(
@@ -269,29 +312,31 @@ fn publish_bridge_event(
     match event {
         BridgeEvent::FlowCompleted {
             id,
-            method,
-            host,
-            path,
-            status_code,
-            duration_ms,
-            response_size_bytes,
             started_at,
-        } => {
-            let flow = FlowSummary {
-                schema_version: SCHEMA_VERSION,
-                id,
-                session_id: Some(session_id.to_string()),
-                source: FlowSource::Proxy,
-                method,
-                host,
-                path,
-                status_code: Some(status_code),
-                duration_ms,
-                response_size_bytes,
-                started_at,
-            };
-            let _ = sender.send(CaptureEvent::FlowCompleted(flow));
-        }
+            response_size_bytes,
+            request,
+            response,
+            timing,
+        } => match normalize_captured_flow(
+            session_id,
+            id,
+            started_at,
+            response_size_bytes,
+            request,
+            response,
+            timing,
+        ) {
+            Ok(flow) => {
+                let _ = sender.send(CaptureEvent::FlowDetailCompleted(flow));
+            }
+            Err(message) => {
+                let _ = sender.send(CaptureEvent::EngineFailed {
+                    code: "mitm_flow_normalize_failed".into(),
+                    message,
+                    recoverable: true,
+                });
+            }
+        },
         BridgeEvent::FlowFailed { id, code, message } => {
             let _ = sender.send(CaptureEvent::FlowFailed {
                 flow_id: id,
@@ -300,6 +345,106 @@ fn publish_bridge_event(
             });
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn normalize_captured_flow(
+    session_id: &str,
+    id: String,
+    started_at: String,
+    response_size_bytes: Option<u64>,
+    request: BridgeRequest,
+    response: BridgeResponse,
+    timing: BridgeTiming,
+) -> Result<CapturedFlow, String> {
+    let request_body = decode_body(request.body)?;
+    let response_body = decode_body(response.body)?;
+    let total_ms = timing.total_ms;
+
+    let summary = FlowSummary {
+        schema_version: SCHEMA_VERSION,
+        id,
+        session_id: Some(session_id.to_string()),
+        source: FlowSource::Proxy,
+        method: request.method.clone(),
+        host: request.host.clone(),
+        path: request.path.clone(),
+        status_code: Some(response.status_code),
+        duration_ms: total_ms,
+        response_size_bytes,
+        started_at,
+    };
+
+    Ok(CapturedFlow {
+        summary,
+        request: CapturedRequest {
+            method: request.method,
+            url: request.url,
+            scheme: request.scheme,
+            host: request.host,
+            port: request.port,
+            path: request.path,
+            query: request.query,
+            headers: normalize_headers(request.headers),
+            body: request_body,
+        },
+        response: Some(CapturedResponse {
+            status_code: response.status_code,
+            reason: response.reason,
+            headers: normalize_headers(response.headers),
+            body: response_body,
+        }),
+        timing: Timing {
+            request_ms: timing.request_ms,
+            server_ms: timing.server_ms,
+            download_ms: timing.download_ms,
+            total_ms,
+            ..Timing::default()
+        },
+        error_code: None,
+        error_message: None,
+    })
+}
+
+fn normalize_headers(headers: Vec<BridgeHeader>) -> Vec<HeaderValue> {
+    headers
+        .into_iter()
+        .map(|header| HeaderValue {
+            sensitive: is_sensitive_header(&header.name),
+            name: header.name,
+            value: header.value,
+        })
+        .collect()
+}
+
+fn is_sensitive_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "proxy-authorization"
+            | "cookie"
+            | "set-cookie"
+            | "x-api-key"
+            | "api-key"
+            | "x-auth-token"
+    )
+}
+
+fn decode_body(body: Option<BridgeBody>) -> Result<Option<CapturedBody>, String> {
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    let bytes = BASE64
+        .decode(body.data_base64.as_bytes())
+        .map_err(|error| format!("invalid base64 body from mitm bridge: {error}"))?;
+
+    Ok(Some(CapturedBody {
+        bytes,
+        content_type: body.content_type,
+        encoding: body.encoding,
+        is_binary: body.is_binary,
+        is_truncated: body.is_truncated,
+    }))
 }
 
 fn now_epoch_millis() -> u128 {
