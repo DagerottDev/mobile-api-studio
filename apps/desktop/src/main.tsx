@@ -5,6 +5,7 @@ import "./styles.css";
 import "./connection.css";
 import "./traffic.css";
 import "./replay.css";
+import "./workspace.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
