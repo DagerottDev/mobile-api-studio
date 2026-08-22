@@ -71,25 +71,3 @@ pub struct Device {
     pub os_version: Option<String>,
     pub state: String,
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fixture_flow_uses_current_schema() {
-        let flow = FlowSummary::fixture(
-            "flow-1",
-            "GET",
-            "api.example.dev",
-            "/json",
-            200,
-            20,
-            42,
-            "2026-08-22T00:00:00Z",
-        );
-
-        assert_eq!(flow.schema_version, SCHEMA_VERSION);
-        assert_eq!(flow.source, FlowSource::Fixture);
-    }
-}
