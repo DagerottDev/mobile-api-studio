@@ -3,6 +3,7 @@ mod fixture_commands;
 mod inspect;
 mod mock_commands;
 mod replay_commands;
+mod sdk_commands;
 mod settings_commands;
 mod sidecar_commands;
 mod workspace_commands;
@@ -15,6 +16,9 @@ use core_model::{
 };
 use device_android::AndroidDeviceProvider;
 use device_ios::IosDeviceProvider;
+use sdk_protocol::SDK_INGESTION_PORT;
+use sdk_storage::SdkDatabase;
+use sdk_transport::SdkIngestionServer;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -34,6 +38,7 @@ const ANDROID_HOST_ALIAS: &str = "10.0.2.2";
 
 struct AppState {
     database: Database,
+    sdk_database: SdkDatabase,
     body_store: BodyStore,
     capture_engine: Arc<MitmDumpEngine>,
     active_connection: Mutex<Option<ActiveConnection>>,
@@ -133,7 +138,7 @@ fn list_devices() -> DeviceDiscoveryPayload {
                 recoverable: error.recoverable,
                 suggested_action: Some(
                     "Start ADB from Android Platform Tools and ensure the emulator is visible in `adb devices`."
-                    .into(),
+                        .into(),
                 ),
             }),
         }
@@ -532,6 +537,7 @@ fn spawn_capture_ingestion(database: Database, body_store: BodyStore, engine: Ar
 fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppState, String> {
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
     let database = Database::open(app_data_dir.join("app.db")).map_err(|error| error.to_string())?;
+    let sdk_database = SdkDatabase::open(database.path()).map_err(|error| error.to_string())?;
     let body_store = BodyStore::new(app_data_dir.join("bodies")).map_err(|error| error.to_string())?;
     let capture_executable = sidecar_commands::configured_capture_executable(&database)?;
     let capture_engine = Arc::new(
@@ -541,6 +547,7 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
 
     Ok(AppState {
         database,
+        sdk_database,
         body_store,
         capture_engine,
         active_connection: Mutex::new(None),
@@ -612,6 +619,8 @@ pub fn run() {
                 state.body_store.clone(),
                 state.capture_engine.clone(),
             );
+            let sdk_server = Arc::new(SdkIngestionServer::localhost(SDK_INGESTION_PORT));
+            sdk_commands::spawn_sdk_ingestion(state.sdk_database.clone(), sdk_server);
             app.manage(state);
             Ok(())
         })
@@ -670,6 +679,11 @@ pub fn run() {
             breakpoint_commands::list_pending_breakpoints,
             breakpoint_commands::resolve_breakpoint,
             breakpoint_commands::clear_stale_breakpoints,
+            sdk_commands::sdk_setup_info,
+            sdk_commands::list_sdk_clients,
+            sdk_commands::list_sdk_events,
+            sdk_commands::search_sdk_events,
+            sdk_commands::sdk_enrichment_for_flow,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mobile API Studio");
