@@ -117,7 +117,7 @@ A minimal SwiftUI integration example is available at:
 samples/ios-sdk-demo
 ```
 
-It uses an XcodeGen `project.yml`. From that directory, generate/open the sample project with your normal XcodeGen workflow, boot an iOS Simulator, start Mobile API Studio, then tap **Send sample request**.
+It uses an XcodeGen `project.yml`. Generate/open the sample project with your normal XcodeGen workflow, boot an iOS Simulator, start Mobile API Studio, then tap **Send sample request**.
 
 ## Android
 
@@ -173,7 +173,7 @@ val client = OkHttpClient.Builder()
 
 When the SDK is disabled, the interceptor forwards the exact original request without adding a correlation header.
 
-The interceptor preserves the source metadata already set by `MobileAPIStudio.setContext`; it intentionally does not treat OkHttp framework stack frames as the source call site.
+The interceptor preserves source metadata already set by `MobileAPIStudio.setContext`; it intentionally does not treat OkHttp framework stack frames as the source call site.
 
 ### Manual/custom networking integration
 
@@ -213,7 +213,7 @@ It enables the SDK only when the application is debuggable, trusts user-installe
 
 The **SDK** screen shows:
 
-- known SDK clients and active/idle state;
+- ingestion service reachability and active/known client counts;
 - app ID, app version/build, device, OS, and SDK version;
 - local SDK endpoints;
 - recent context/log/network events;
@@ -231,6 +231,8 @@ Flows without the SDK remain explicitly labeled as proxy-only.
 
 Traffic also has a separate app-context search field. It can filter captured flows by text present in SDK event metadata, including screen, feature, source, attributes, and logs attached to request events.
 
+Historical sessions display their attributed app ID once a correlated SDK request is observed.
+
 ## Safety and scope
 
 - This feature is intended for applications you develop or are authorized to debug.
@@ -245,10 +247,10 @@ Traffic also has a separate app-context search field. It can filter captured flo
 If the app does not appear under **SDK**:
 
 1. confirm Mobile API Studio desktop is running;
-2. confirm the SDK is enabled in the app build;
-3. on iOS Simulator, confirm the SDK uses `127.0.0.1:8182`;
-4. on Android Emulator, confirm it uses `10.0.2.2:8182`;
-5. check the SDK screen for the expected handshake;
-6. verify `GET /health` from the host if the ingestion service itself is in doubt.
+2. confirm the SDK screen reports **ingestion online**;
+3. confirm the SDK is enabled in the app build;
+4. on iOS Simulator, confirm the SDK uses `127.0.0.1:8182`;
+5. on Android Emulator, confirm it uses `10.0.2.2:8182`;
+6. check the SDK screen for the expected handshake.
 
 If the SDK client appears but a proxy flow says **proxy-only**, confirm the request is going through the URLSession integration, OkHttp interceptor, or manual correlation API, and that the request itself is captured by the proxy.
