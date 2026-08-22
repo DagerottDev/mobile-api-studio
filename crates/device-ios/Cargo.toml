@@ -1,0 +1,10 @@
+[package]
+name = "device-ios"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+core-model = { path = "../core-model" }
+serde_json.workspace = true

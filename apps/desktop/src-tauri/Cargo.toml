@@ -16,6 +16,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 capture-core = { path = "../../../crates/capture-core" }
 core-model = { path = "../../../crates/core-model" }
+device-android = { path = "../../../crates/device-android" }
+device-ios = { path = "../../../crates/device-ios" }
 serde.workspace = true
 storage = { path = "../../../crates/storage" }
 tauri = { version = "2", features = [] }

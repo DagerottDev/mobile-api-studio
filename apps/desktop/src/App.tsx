@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ConnectView } from "./components/ConnectView";
 import type { CaptureSession, FlowSummary } from "./types";
 
 type Route = "Connect" | "Traffic" | "Replay" | "Settings";
@@ -7,7 +8,7 @@ type Route = "Connect" | "Traffic" | "Replay" | "Settings";
 const routes: Route[] = ["Connect", "Traffic", "Replay", "Settings"];
 
 function App() {
-  const [route, setRoute] = useState<Route>("Traffic");
+  const [route, setRoute] = useState<Route>("Connect");
   const [health, setHealth] = useState("checking Rust core…");
   const [flows, setFlows] = useState<FlowSummary[]>([]);
   const [sessions, setSessions] = useState<CaptureSession[]>([]);
@@ -87,18 +88,16 @@ function App() {
         <header className="toolbar">
           <div>
             <h1>{route}</h1>
-            <p>Phase 0 foundation</p>
+            <p>{route === "Connect" ? "Discover local mobile runtimes" : "Mobile API Studio"}</p>
           </div>
           {route === "Traffic" ? (
             <button className="secondary" onClick={addDemoFlow}>
               Ingest demo flow
             </button>
-          ) : (
-            <button className="primary" disabled>
-              Connect device
-            </button>
-          )}
+          ) : null}
         </header>
+
+        {route === "Connect" ? <ConnectView /> : null}
 
         {route === "Traffic" ? (
           <section className="traffic-layout">
@@ -177,17 +176,18 @@ function App() {
               )}
             </div>
           </section>
-        ) : (
+        ) : null}
+
+        {route === "Replay" || route === "Settings" ? (
           <section className="placeholder panel">
             <span className="eyebrow">{route}</span>
-            <h2>{route} is intentionally minimal in Phase 0.</h2>
+            <h2>{route} implementation follows the capture connection slice.</h2>
             <p>
-              The current implementation establishes the desktop shell, Rust
-              domain model, capture abstraction, session model, and persistent
-              local storage. Device integrations begin in Phase 1.
+              Phase 1 is currently wiring real iOS Simulator and Android Emulator
+              discovery into the desktop application before starting proxy capture.
             </p>
           </section>
-        )}
+        ) : null}
       </main>
     </div>
   );

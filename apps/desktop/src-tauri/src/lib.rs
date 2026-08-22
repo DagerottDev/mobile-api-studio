@@ -1,5 +1,11 @@
 use capture_core::CaptureEvent;
-use core_model::{AppError, CaptureSession, FlowSummary, SessionStatus, SCHEMA_VERSION};
+use core_model::{
+    AppError, CaptureSession, ConnectionDiagnostic, Device, FlowSummary, SessionStatus,
+    SCHEMA_VERSION,
+};
+use device_android::AndroidDeviceProvider;
+use device_ios::IosDeviceProvider;
+use serde::Serialize;
 use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -12,9 +18,83 @@ struct AppState {
     _body_store: BodyStore,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceDiscoveryPayload {
+    devices: Vec<Device>,
+    diagnostics: Vec<ConnectionDiagnostic>,
+}
+
 #[tauri::command]
 fn health(state: State<'_, AppState>) -> String {
     format!("Rust core ready · {}", state.database.path().display())
+}
+
+#[tauri::command]
+fn list_devices() -> DeviceDiscoveryPayload {
+    let mut devices = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    let ios_provider = IosDeviceProvider;
+    if ios_provider.is_available() {
+        match ios_provider.list_devices() {
+            Ok(mut discovered) => devices.append(&mut discovered),
+            Err(error) => diagnostics.push(ConnectionDiagnostic {
+                code: error.code,
+                title: "iOS Simulator discovery failed".into(),
+                message: error.message,
+                recoverable: error.recoverable,
+                suggested_action: Some(
+                    "Open Xcode and ensure Command Line Tools and Simulator runtimes are installed."
+                        .into(),
+                ),
+            }),
+        }
+    } else {
+        diagnostics.push(ConnectionDiagnostic {
+            code: "ios_tool_unavailable".into(),
+            title: "iOS tools unavailable".into(),
+            message: "xcrun/simctl could not be found on this machine.".into(),
+            recoverable: true,
+            suggested_action: Some(
+                "Install Xcode and select its Command Line Tools before connecting an iOS Simulator."
+                    .into(),
+            ),
+        });
+    }
+
+    let android_provider = AndroidDeviceProvider;
+    if android_provider.is_available() {
+        match android_provider.list_devices() {
+            Ok(mut discovered) => devices.append(&mut discovered),
+            Err(error) => diagnostics.push(ConnectionDiagnostic {
+                code: error.code,
+                title: "Android Emulator discovery failed".into(),
+                message: error.message,
+                recoverable: error.recoverable,
+                suggested_action: Some(
+                    "Start ADB from Android Platform Tools and ensure the emulator is visible in `adb devices`."
+                        .into(),
+                ),
+            }),
+        }
+    } else {
+        diagnostics.push(ConnectionDiagnostic {
+            code: "android_tool_unavailable".into(),
+            title: "Android tools unavailable".into(),
+            message: "adb could not be found on this machine.".into(),
+            recoverable: true,
+            suggested_action: Some(
+                "Install Android Platform Tools or make the Android SDK platform-tools directory available on PATH."
+                    .into(),
+            ),
+        });
+    }
+
+    DeviceDiscoveryPayload {
+        devices,
+        diagnostics,
+    }
 }
 
 #[tauri::command]
@@ -180,6 +260,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             health,
+            list_devices,
             list_flows,
             list_sessions,
             create_session,

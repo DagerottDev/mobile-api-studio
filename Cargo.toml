@@ -5,6 +5,8 @@ members = [
   "crates/core-model",
   "crates/capture-core",
   "crates/storage",
+  "crates/device-ios",
+  "crates/device-android",
 ]
 
 [workspace.package]
