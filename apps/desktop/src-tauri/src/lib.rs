@@ -1,5 +1,6 @@
 mod inspect;
 mod replay_commands;
+mod settings_commands;
 mod workspace_commands;
 
 use capture_core::{CaptureConfig, CaptureEngine, CaptureHandle};
@@ -642,6 +643,11 @@ pub fn run() {
             workspace_commands::upsert_environment_variable,
             workspace_commands::delete_environment_variable,
             workspace_commands::interpolate_with_active_environment,
+            settings_commands::connection_doctor,
+            settings_commands::list_onboarding_steps,
+            settings_commands::set_onboarding_step,
+            settings_commands::export_workspace,
+            settings_commands::import_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mobile API Studio");
