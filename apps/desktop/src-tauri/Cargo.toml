@@ -1,0 +1,21 @@
+[package]
+name = "mobile-api-studio"
+version = "0.0.1"
+description = "Mobile API Studio desktop application"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "mobile_api_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+capture-core = { path = "../../../crates/capture-core" }
+core-model = { path = "../../../crates/core-model" }
+serde.workspace = true
+storage = { path = "../../../crates/storage" }
+tauri = { version = "2", features = [] }
