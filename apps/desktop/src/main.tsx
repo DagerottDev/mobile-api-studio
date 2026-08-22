@@ -9,6 +9,8 @@ import "./mocks.css";
 import "./workspace.css";
 import "./settings.css";
 import "./sdk.css";
+import "./compare.css";
+import "./ai.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

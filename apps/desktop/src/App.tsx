@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
+import { AiSettingsPanel } from "./components/AiSettingsPanel";
+import { AiView } from "./components/AiView";
+import { CompareView } from "./components/CompareView";
 import { ConnectView } from "./components/ConnectView";
 import { MocksView } from "./components/MocksView";
 import { MockUtilitiesView } from "./components/MockUtilitiesView";
@@ -11,9 +14,9 @@ import { TrafficView } from "./components/TrafficView";
 import { WorkspaceView } from "./components/WorkspaceView";
 import type { CaptureSession } from "./types";
 
-type Route = "Connect" | "Traffic" | "Replay" | "Mocks" | "SDK" | "Workspace" | "Settings";
+type Route = "Connect" | "Traffic" | "Replay" | "Mocks" | "Compare" | "AI" | "SDK" | "Workspace" | "Settings";
 
-const routes: Route[] = ["Connect", "Traffic", "Replay", "Mocks", "SDK", "Workspace", "Settings"];
+const routes: Route[] = ["Connect", "Traffic", "Replay", "Mocks", "Compare", "AI", "SDK", "Workspace", "Settings"];
 
 function App() {
   const [route, setRoute] = useState<Route>("Connect");
@@ -91,11 +94,15 @@ function App() {
                     ? "Edit and resend captured or saved requests"
                     : route === "Mocks"
                       ? "Override responses, reuse fixtures, and pause live mobile API calls"
-                      : route === "SDK"
-                        ? "Connect app context, logs, screens, features, and source locations to network flows"
-                        : route === "Workspace"
-                          ? "Manage sessions, saved requests, and environments"
-                          : "Connection Doctor, onboarding, backup, restore, and capture setup"}
+                      : route === "Compare"
+                        ? "Compare sessions deterministically across calls, payloads, timing, and app context"
+                        : route === "AI"
+                          ? "Preview redacted evidence, then optionally ask AI to explain a session diff or captured flow"
+                          : route === "SDK"
+                            ? "Connect app context, logs, screens, features, and source locations to network flows"
+                            : route === "Workspace"
+                              ? "Manage sessions, saved requests, and environments"
+                              : "Connection Doctor, onboarding, backup, restore, capture setup, and optional AI provider settings"}
             </p>
           </div>
         </header>
@@ -104,12 +111,15 @@ function App() {
         {route === "Traffic" ? <TrafficView /> : null}
         {route === "Replay" ? <ReplayView savedRequestId={replaySavedRequestId} /> : null}
         {route === "Mocks" ? <div className="mocks-page-stack"><MocksView /><MockUtilitiesView /></div> : null}
+        {route === "Compare" ? <CompareView /> : null}
+        {route === "AI" ? <AiView /> : null}
         {route === "SDK" ? <SdkView /> : null}
         {route === "Workspace" ? <WorkspaceView onOpenReplay={openSavedRequest} /> : null}
         {route === "Settings" ? (
           <>
             <SettingsView />
             <SidecarSettingsPanel />
+            <AiSettingsPanel />
           </>
         ) : null}
       </main>
