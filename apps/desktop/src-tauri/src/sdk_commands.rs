@@ -3,6 +3,7 @@ use core_model::AppError;
 use sdk_protocol::{SdkEnvelope, SDK_CORRELATION_HEADER, SDK_EVENT_PATH, SDK_HEALTH_PATH, SDK_INGESTION_PORT};
 use sdk_storage::SdkClientRecord;
 use serde::Serialize;
+use std::collections::HashSet;
 use tauri::State;
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,6 +68,58 @@ pub fn search_sdk_events(
         .sdk_database
         .search_events(&text, limit.unwrap_or(500))
         .map_err(sdk_storage_error)
+}
+
+#[tauri::command]
+pub fn sdk_flow_ids_matching(
+    text: String,
+    limit: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, AppError> {
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let events = state
+        .sdk_database
+        .search_events(&text, limit.unwrap_or(1_000))
+        .map_err(sdk_storage_error)?;
+    let request_ids: HashSet<String> = events
+        .iter()
+        .filter_map(|event| event.event.request_id().map(str::to_string))
+        .collect();
+    if request_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let flows = state
+        .database
+        .list_flows(10_000)
+        .map_err(storage_error)?;
+    let mut matches = Vec::new();
+    for flow in flows {
+        let detail = state
+            .database
+            .get_flow_detail(&flow.id)
+            .map_err(storage_error)?;
+        let request_id = detail
+            .as_ref()
+            .and_then(|detail| detail.request.as_ref())
+            .and_then(|request| {
+                request
+                    .headers
+                    .iter()
+                    .find(|header| header.name.eq_ignore_ascii_case(SDK_CORRELATION_HEADER))
+                    .map(|header| header.value.as_str())
+            });
+        if request_id.is_some_and(|value| request_ids.contains(value)) {
+            matches.push(flow.id);
+        }
+        if matches.len() >= limit.unwrap_or(1_000).min(10_000) {
+            break;
+        }
+    }
+    Ok(matches)
 }
 
 #[tauri::command]
