@@ -2,9 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { SdkClientRecord, SdkEnvelope, SdkSetupInfo } from "../sdkTypes";
 import { contextForEnvelope } from "../sdkTypes";
+import type { CaptureSession } from "../types";
 
 export function SdkView() {
   const [clients, setClients] = useState<SdkClientRecord[]>([]);
+  const [sessions, setSessions] = useState<CaptureSession[]>([]);
   const [setup, setSetup] = useState<SdkSetupInfo | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [events, setEvents] = useState<SdkEnvelope[]>([]);
@@ -12,11 +14,13 @@ export function SdkView() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextClients, nextSetup] = await Promise.all([
+      const [nextClients, nextSessions, nextSetup] = await Promise.all([
         invoke<SdkClientRecord[]>("list_sdk_clients"),
+        invoke<CaptureSession[]>("list_sessions"),
         invoke<SdkSetupInfo>("sdk_setup_info"),
       ]);
       setClients(nextClients);
+      setSessions(nextSessions);
       setSetup(nextSetup);
       setSelectedId((current) => current && nextClients.some((client) => client.clientId === current)
         ? current
@@ -54,6 +58,7 @@ export function SdkView() {
 
   const selected = useMemo(() => clients.find((client) => client.clientId === selectedId) ?? null, [clients, selectedId]);
   const activeCount = clients.filter(isRecentlyActive).length;
+  const attributedSessions = sessions.filter((session) => Boolean(session.appId)).slice(0, 8);
 
   return (
     <div className="sdk-page-stack">
@@ -70,6 +75,10 @@ export function SdkView() {
           <div><span>Correlation</span><strong>{setup.correlationHeader}</strong></div>
         </div> : null}
         <p className="muted-copy sdk-note">SDK telemetry stays local. The correlation header is captured by Mobile API Studio and removed by the proxy before the real backend receives the request.</p>
+        {attributedSessions.length > 0 ? <div className="sdk-session-strip">
+          <strong>Attributed sessions</strong>
+          <div>{attributedSessions.map((session) => <span key={session.id}><b>{session.name}</b><small>{session.appId} · {session.deviceId ?? "unknown device"}</small></span>)}</div>
+        </div> : null}
       </section>
 
       <section className="panel sdk-client-layout">
