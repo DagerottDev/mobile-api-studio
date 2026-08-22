@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ConnectView } from "./components/ConnectView";
 import { ReplayView } from "./components/ReplayView";
 import { SettingsView } from "./components/SettingsView";
+import { SidecarSettingsPanel } from "./components/SidecarSettingsPanel";
 import { TrafficView } from "./components/TrafficView";
 import { WorkspaceView } from "./components/WorkspaceView";
 import type { CaptureSession } from "./types";
@@ -87,7 +88,7 @@ function App() {
                     ? "Edit and resend captured or saved requests"
                     : route === "Workspace"
                       ? "Manage sessions, saved requests, and environments"
-                      : "Connection Doctor, onboarding, backup, and restore"}
+                      : "Connection Doctor, onboarding, backup, restore, and capture setup"}
             </p>
           </div>
         </header>
@@ -96,7 +97,12 @@ function App() {
         {route === "Traffic" ? <TrafficView /> : null}
         {route === "Replay" ? <ReplayView savedRequestId={replaySavedRequestId} /> : null}
         {route === "Workspace" ? <WorkspaceView onOpenReplay={openSavedRequest} /> : null}
-        {route === "Settings" ? <SettingsView /> : null}
+        {route === "Settings" ? (
+          <>
+            <SettingsView />
+            <SidecarSettingsPanel />
+          </>
+        ) : null}
       </main>
     </div>
   );
