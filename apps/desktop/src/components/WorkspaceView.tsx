@@ -11,7 +11,11 @@ import type {
 
 type WorkspaceTab = "sessions" | "collections" | "environments";
 
-export function WorkspaceView() {
+interface WorkspaceViewProps {
+  onOpenReplay?: (requestId: string) => void;
+}
+
+export function WorkspaceView({ onOpenReplay }: WorkspaceViewProps) {
   const [tab, setTab] = useState<WorkspaceTab>("sessions");
   return (
     <section className="workspace-view panel">
@@ -27,7 +31,7 @@ export function WorkspaceView() {
         ))}
       </div>
       {tab === "sessions" ? <SessionsPanel /> : null}
-      {tab === "collections" ? <CollectionsPanel /> : null}
+      {tab === "collections" ? <CollectionsPanel onOpenReplay={onOpenReplay} /> : null}
       {tab === "environments" ? <EnvironmentsPanel /> : null}
     </section>
   );
@@ -151,7 +155,7 @@ function SessionsPanel() {
   );
 }
 
-function CollectionsPanel() {
+function CollectionsPanel({ onOpenReplay }: { onOpenReplay?: (requestId: string) => void }) {
   const [collections, setCollections] = useState<SavedCollection[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [requests, setRequests] = useState<SavedRequest[]>([]);
@@ -175,6 +179,7 @@ function CollectionsPanel() {
   useEffect(() => { void refreshCollections(); }, [refreshCollections]);
 
   const selected = collections.find((collection) => collection.id === selectedId) ?? null;
+  const selectedIndex = collections.findIndex((collection) => collection.id === selectedId);
   useEffect(() => {
     setName(selected?.name ?? "");
     setDescription(selected?.description ?? "");
@@ -189,7 +194,7 @@ function CollectionsPanel() {
     setBusy(true);
     try {
       const collection = await invoke<SavedCollection>("upsert_collection", {
-        input: { id: null, name: newCollectionName, description: null, sortOrder: null },
+        input: { id: null, name: newCollectionName, description: null, sortOrder: collections.length },
       });
       setNewCollectionName("");
       await refreshCollections();
@@ -207,6 +212,31 @@ function CollectionsPanel() {
         input: { id: selected.id, name, description: description.trim() || null, sortOrder: selected.sortOrder },
       });
       await refreshCollections();
+    } catch (value) { setError(formatInvokeError(value)); }
+    finally { setBusy(false); }
+  }
+
+  async function moveCollection(direction: -1 | 1) {
+    if (!selected || selectedIndex < 0) return;
+    const targetIndex = selectedIndex + direction;
+    if (targetIndex < 0 || targetIndex >= collections.length) return;
+    const reordered = [...collections];
+    const [moved] = reordered.splice(selectedIndex, 1);
+    reordered.splice(targetIndex, 0, moved);
+    setBusy(true);
+    try {
+      await Promise.all(
+        reordered.map((collection, index) => invoke("upsert_collection", {
+          input: {
+            id: collection.id,
+            name: collection.name,
+            description: collection.description,
+            sortOrder: index,
+          },
+        })),
+      );
+      await refreshCollections();
+      setSelectedId(selected.id);
     } catch (value) { setError(formatInvokeError(value)); }
     finally { setBusy(false); }
   }
@@ -245,9 +275,23 @@ function CollectionsPanel() {
         {selected ? <>
           <div className="workspace-detail-heading"><div><span className="eyebrow">Collection</span><h2>{selected.name}</h2></div><span className="pill">{requests.length} requests</span></div>
           <div className="collection-edit-grid"><label className="field-label">Name<input className="text-input" value={name} onChange={(event) => setName(event.target.value)} /></label><label className="field-label">Description<input className="text-input" value={description} onChange={(event) => setDescription(event.target.value)} /></label></div>
-          <div className="workspace-actions"><button className="primary" onClick={() => void saveCollection()} disabled={busy}>Save collection</button><button className="secondary danger-action" onClick={() => void deleteCollection()} disabled={busy}>Delete collection</button></div>
+          <div className="workspace-actions">
+            <button className="primary" onClick={() => void saveCollection()} disabled={busy}>Save collection</button>
+            <button className="secondary" onClick={() => void moveCollection(-1)} disabled={busy || selectedIndex <= 0}>Move up</button>
+            <button className="secondary" onClick={() => void moveCollection(1)} disabled={busy || selectedIndex < 0 || selectedIndex >= collections.length - 1}>Move down</button>
+            <button className="secondary danger-action" onClick={() => void deleteCollection()} disabled={busy}>Delete collection</button>
+          </div>
           <div className="saved-request-list">
-            {requests.map((request) => <div className="saved-request-row" key={request.id}><span className={`method method-${request.method.toLowerCase()}`}>{request.method}</span><div><strong>{request.name}</strong><small>{request.url}</small></div><button className="secondary compact" onClick={() => void deleteRequest(request)}>Delete</button></div>)}
+            {requests.map((request) => (
+              <div className="saved-request-row" key={request.id}>
+                <span className={`method method-${request.method.toLowerCase()}`}>{request.method}</span>
+                <div><strong>{request.name}</strong><small>{request.url}</small></div>
+                <div className="saved-request-actions">
+                  {onOpenReplay ? <button className="primary compact" onClick={() => onOpenReplay(request.id)}>Open in Replay</button> : null}
+                  <button className="secondary compact" onClick={() => void deleteRequest(request)}>Delete</button>
+                </div>
+              </div>
+            ))}
             {requests.length === 0 ? <p className="empty-state">No requests saved here yet. Open Traffic and save a captured request into this collection.</p> : null}
           </div>
         </> : <p className="empty-state">Select a collection.</p>}
