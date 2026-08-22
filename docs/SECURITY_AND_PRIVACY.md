@@ -1,37 +1,53 @@
 # Security and Privacy
 
-Mobile API Studio handles authentication headers, cookies, customer/test payloads, and a locally trusted development CA. Security is therefore a core product requirement rather than cleanup work.
+> **Status:** this document reflects security/privacy boundaries implemented through v0.5. Formal security testing and release review are still part of the deferred owner-led validation/release stage.
+
+Mobile API Studio can handle authentication headers, cookies, test/customer payloads, local proxy configuration, a development CA, SDK metadata, and optional external AI requests. These boundaries are therefore part of product architecture, not optional cleanup.
 
 ## 1. Local-first default
 
-Captured requests, responses, session metadata, certificates, and logs remain local unless the user explicitly exports or sends selected redacted context to an AI provider.
+By default, these remain on the developer machine:
 
-No telemetry should include captured URLs, headers, or bodies.
+- capture sessions and flow metadata;
+- request/response bodies;
+- local CA material;
+- saved requests and environments;
+- mock rules/fixtures;
+- SDK client/context/log/network events;
+- deterministic comparison results;
+- AI result history.
 
-## 2. CA private key
+Data leaves the machine only through an explicit user action such as normal request Replay to a target server, workspace export, or an optional AI send after preview.
 
-- Generate uniquely per installation.
-- Store only in application-owned data directory.
-- Restrict file permissions to current user where supported.
-- Never export the private key through normal UI.
-- Provide rotation/regeneration.
-- Clearly distinguish installing a public root certificate from exposing the private key.
+## 2. Capture CA policy
 
-## 3. Proxy/system mutations
+The current capture path uses mitmproxy CA material inside Mobile API Studio's local capture data directory.
 
-Before changing proxy settings:
+Required policy:
 
-1. read and persist prior state;
-2. apply the minimum required mutation;
-3. record rollback action;
-4. restore on disconnect;
-5. attempt recovery on next launch if prior shutdown was abnormal.
+- private CA material stays local;
+- it is never included in normal export/diagnostic flows;
+- the UI explains why HTTPS interception needs local trust;
+- CA installation is for developer-controlled test runtimes;
+- the product does not implement silent certificate-pinning bypass.
 
-Never assume “no proxy” was the previous state.
+For iOS Simulator the app can install the development root certificate through `simctl`. Some runtime versions may still require the developer to explicitly enable full trust.
 
-## 4. Secret redaction
+## 3. Proxy/device mutation and rollback
 
-Default-sensitive header names include case-insensitive variants of:
+Before changing a supported mutable proxy setting, Mobile API Studio records enough prior state to restore it.
+
+Current behavior:
+
+- Android Emulator proxy state is read before mutation and restored on disconnect/recovery.
+- A rollback journal survives abnormal shutdown for supported mutations.
+- iOS Simulator proxy routing is guided/manual rather than silently changing broad host proxy configuration.
+
+Never assume the pre-existing state was “no proxy.”
+
+## 4. Secret headers
+
+Sensitive values are identified case-insensitively. Core/default examples include:
 
 ```text
 Authorization
@@ -42,102 +58,189 @@ X-API-Key
 X-Auth-Token
 ```
 
-Allow user-defined sensitive headers.
+Additional sensitive names can be treated as secrets by higher-level redaction settings.
 
-Default exports, cURL copy, diagnostic bundles, search previews, and AI context use redacted values.
+Default-safe behaviors include:
 
-## 5. Body handling
+- redacted cURL export;
+- secret-aware comparison output;
+- workspace export without credential-store values;
+- AI context sanitization before any provider call.
 
-Bodies may contain credentials or personal/test data.
+## 5. Internal SDK correlation metadata
 
-- avoid logging body content in debugger logs;
-- lazy-load large bodies;
-- truncate by configurable cap;
-- retain `is_truncated` metadata;
-- allow per-host “do not store bodies” rule later;
-- support clearing bodies from a session.
-
-## 6. AI boundary
-
-AI analysis is opt-in.
-
-Before sending:
+The optional app-aware SDK uses the development-only header:
 
 ```text
-selected flows
- -> secret-header redaction
- -> body redaction rules
- -> size limit
- -> user-visible context summary
- -> provider
+X-Mobile-API-Studio-Request-Id
 ```
 
-Provider API keys belong in OS secure credential storage.
+The proxy records this value for local correlation and removes the header before forwarding the request to the real backend.
 
-Core debugging functionality must continue to work with AI disabled.
+The same internal header is omitted from:
 
-## 7. Certificate pinning policy
+- normal cURL export;
+- Replay requests;
+- AI context.
 
-Mobile API Studio must not market or implement silent pinning bypass as a normal connection feature.
+It is product-local debugging metadata, not part of the application's API contract.
 
-When pinning is suspected:
+## 6. Body handling
 
-- identify the likely cause;
-- explain that a generic MITM CA cannot be trusted by a pinned client;
-- recommend debug configuration for apps the developer controls;
-- offer the v0.4 SDK path for app-level observability.
+Bodies can contain credentials or sensitive test/customer data.
 
-## 8. Release-build SDK policy
+Implemented/design rules:
 
-SDKs introduced in v0.4 must make production inclusion difficult by accident.
+- bodies are stored locally in a content-addressed store;
+- large/binary content is loaded on demand rather than continuously pushed to the webview;
+- truncation/binary/content-type metadata is retained;
+- debugger/application logs should not contain raw captured bodies by default;
+- exported/AI contexts are bounded rather than unbounded body dumps.
 
-Preferred patterns:
+Future retention controls such as per-host “do not store body” can be added independently of the body-store architecture.
 
-- debug-only dependency examples;
-- no-op release artifact where appropriate;
-- runtime off by default;
-- explicit endpoint pairing;
-- no remote listener exposed outside local development context.
+## 7. Environment and provider secrets
 
-## 9. Network listener
+Secret values use the OS credential-store abstraction rather than ordinary SQLite values.
 
-Capture/control listeners should bind to loopback unless a selected mobile runtime specifically requires host reachability.
+Current macOS secure-store usage includes:
 
-If binding to a wider interface is required:
+- secret environment variables;
+- OpenAI/BYOK API key.
 
-- use random high port;
-- authenticate SDK/control channel;
-- show an explicit UI indicator;
-- do not expose an unauthenticated control API to the LAN.
+Workspace export includes metadata indicating a secret must be re-entered but does not export the credential-store secret value/reference as usable credentials.
 
-## 10. Diagnostic bundles
+## 8. App-aware SDK boundary
+
+SDKs are optional and disabled/pass-through unless explicitly enabled by the developer.
+
+### iOS
+
+SDK telemetry uses an ephemeral URLSession configured to avoid recursive app instrumentation/proxy routing.
+
+### Android
+
+SDK telemetry uses a local direct transport rather than the application's intercepted OkHttp path.
+
+The SDK does not create a remote cloud telemetry dependency. Desktop ingestion is local to the development host.
+
+## 9. AI boundary
+
+AI analysis is explicitly opt-in and sits after deterministic local analysis.
+
+Current flow:
+
+```text
+selected comparison/flow
+ -> deterministic local evidence
+ -> sensitive-header redaction
+ -> internal-header omission
+ -> configurable JSON/query secret-key redaction
+ -> body/string/context limits
+ -> exact context preview
+ -> SHA-256 context fingerprint
+ -> explicit user send action
+ -> fingerprint re-check
+ -> AI provider
+```
+
+The current OpenAI provider uses the Responses API with `store: false`.
+
+The user's provider key is loaded from the OS secure store and is not persisted in SQLite or workspace exports.
+
+AI is never required for capture, Replay, mocks, SDK context, or deterministic comparison.
+
+## 10. Context-preview guarantee
+
+The external-send command recomputes the sanitized context and checks that its SHA-256 fingerprint matches the preview fingerprint supplied by the UI.
+
+If the evidence changes after preview, the external request is rejected and the user must preview again.
+
+This prevents a stale preview from authorizing materially different context.
+
+## 11. Certificate pinning policy
+
+Mobile API Studio does **not** implement pinning bypass as a product feature.
+
+When a client rejects the interception CA:
+
+- diagnose likely trust/pinning behavior;
+- recommend debug networking configuration for applications the developer controls;
+- use the optional app-aware SDK for additional context where appropriate;
+- do not inject generic bypass hooks into third-party or production apps.
+
+## 12. Listener exposure
+
+### Capture
+
+Android Emulator host routing can require the capture proxy to be reachable from the emulator through its host alias. This is a broader binding than loopback and must be treated as a development-host exposure.
+
+### SDK telemetry
+
+The desktop SDK ingestion listener binds to host loopback. Android Emulator reaches that loopback through `10.0.2.2`; it is not intended as a LAN telemetry service.
+
+Control/SDK interfaces should not become unauthenticated general LAN APIs.
+
+## 13. Import/export
+
+Workspace bundles are versioned and designed to remain portable without carrying credential-store secrets.
+
+Security requirements:
+
+- exclude provider/environment secret values;
+- redact sensitive headers;
+- do not include CA private key material;
+- keep import paths/data scoped to the application store;
+- refuse destructive replacement while incompatible live state such as an active capture would make it unsafe.
+
+## 14. Local AI history
+
+AI output is stored locally for developer convenience together with metadata such as:
+
+- task/target;
+- provider;
+- model;
+- sanitized-context fingerprint;
+- timestamp/result.
+
+The provider API key is not stored with that history.
+
+## 15. Diagnostic bundles and logs
+
+Any future diagnostic bundle should be designed around metadata rather than raw traffic.
 
 May include:
 
 - app version;
-- OS version;
-- capture engine version;
+- host OS/runtime versions;
+- capture-engine version;
 - sanitized device metadata;
-- error codes;
+- typed error codes;
 - redacted configuration;
-- application logs.
+- application/sidecar logs.
 
 Must exclude by default:
 
 - CA private key;
-- Authorization/Cookie values;
+- Authorization/Cookie/API-key values;
 - raw captured bodies;
-- environment secrets.
+- environment/provider secrets.
 
-## 11. Threat-model questions before public release
+## 16. Validation/release threat-model checklist
 
-- Can another local user steal the CA key?
-- Can a LAN host access the capture/control port?
-- Can malicious captured JSON trigger unsafe UI rendering?
-- Can a replay request read arbitrary local files through body references?
-- Can export/import path traversal overwrite files?
-- Can a malicious sidecar event cause unbounded memory use?
-- Does crash recovery always restore modified proxy settings?
-- Does uninstall leave trusted CA certificates behind without warning?
+The following are not claimed as formally tested yet and should be explicitly reviewed during final validation/public-release work:
 
-These questions should become security tests, not only documentation.
+- local CA private-key file permissions;
+- wider capture-port exposure on the development host;
+- malicious HTML/JSON rendering behavior in the desktop webview;
+- untrusted import bundle handling/path traversal;
+- body-reference file access boundaries;
+- malformed/unbounded sidecar events;
+- breakpoint auto-continue/recovery paths;
+- proxy rollback after abnormal termination;
+- trusted-CA cleanup/uninstall guidance;
+- SDK accidental release enablement;
+- AI redaction across representative real payloads;
+- Keychain secret deletion/update behavior.
+
+See [FINAL_VALIDATION.md](FINAL_VALIDATION.md) for the owner-led validation stage.
