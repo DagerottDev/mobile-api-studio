@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { ConnectView } from "./components/ConnectView";
+import { ReplayView } from "./components/ReplayView";
 import { TrafficView } from "./components/TrafficView";
 import type { CaptureSession } from "./types";
 
@@ -74,22 +75,24 @@ function App() {
                 ? "Discover and connect local mobile runtimes"
                 : route === "Traffic"
                   ? "Inspect captured mobile API traffic"
-                  : "Mobile API Studio"}
+                  : route === "Replay"
+                    ? "Edit and resend captured requests"
+                    : "Mobile API Studio"}
             </p>
           </div>
         </header>
 
         {route === "Connect" ? <ConnectView /> : null}
         {route === "Traffic" ? <TrafficView /> : null}
+        {route === "Replay" ? <ReplayView /> : null}
 
-        {route === "Replay" || route === "Settings" ? (
+        {route === "Settings" ? (
           <section className="placeholder panel">
-            <span className="eyebrow">{route}</span>
-            <h2>{route} implementation is the next Phase 1 slice.</h2>
+            <span className="eyebrow">Settings</span>
+            <h2>Settings expands in Phase 2.</h2>
             <p>
-              Runtime discovery, connection lifecycle, proxy capture, persistent full request/
-              response details, filtering, body inspection, timing, and safe cURL export are now
-              wired. Replay is next.
+              Phase 1 focuses on the complete capture, inspect, and replay workflow. Environment,
+              collection, filtering, and connection-preference management are part of the next phase.
             </p>
           </section>
         ) : null}
