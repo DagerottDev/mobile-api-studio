@@ -85,6 +85,10 @@ export interface SdkSetupInfo {
   eventPath: string;
   healthPath: string;
   correlationHeader: string;
+  ingestionReachable: boolean;
+  activeClientCount: number;
+  knownClientCount: number;
+  latestSeenAt: string | null;
 }
 
 export interface FlowSdkEnrichment {
