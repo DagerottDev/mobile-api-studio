@@ -1,6 +1,7 @@
 mod inspect;
 mod replay_commands;
 mod settings_commands;
+mod sidecar_commands;
 mod workspace_commands;
 
 use capture_core::{CaptureConfig, CaptureEngine, CaptureHandle};
@@ -129,7 +130,7 @@ fn list_devices() -> DeviceDiscoveryPayload {
                 recoverable: error.recoverable,
                 suggested_action: Some(
                     "Start ADB from Android Platform Tools and ensure the emulator is visible in `adb devices`."
-                        .into(),
+                    .into(),
                 ),
             }),
         }
@@ -529,10 +530,11 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
     let database = Database::open(app_data_dir.join("app.db")).map_err(|error| error.to_string())?;
     let body_store = BodyStore::new(app_data_dir.join("bodies")).map_err(|error| error.to_string())?;
-    let capture_engine = Arc::new(MitmDumpEngine::new(
-        addon_path,
-        app_data_dir.join("mitmproxy"),
-    ));
+    let capture_executable = sidecar_commands::configured_capture_executable(&database)?;
+    let capture_engine = Arc::new(
+        MitmDumpEngine::new(addon_path, app_data_dir.join("mitmproxy"))
+            .with_executable(capture_executable),
+    );
 
     Ok(AppState {
         database,
@@ -648,6 +650,8 @@ pub fn run() {
             settings_commands::set_onboarding_step,
             settings_commands::export_workspace,
             settings_commands::import_workspace,
+            sidecar_commands::capture_executable_setting,
+            sidecar_commands::set_capture_executable,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mobile API Studio");
