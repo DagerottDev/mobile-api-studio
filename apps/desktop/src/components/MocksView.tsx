@@ -231,7 +231,7 @@ export function MocksView() {
 
             <section className="mock-section breakpoint-preview">
               <h3>Breakpoints</h3>
-              <p className="muted-copy">The rule model already reserves request and response breakpoint flags. Interactive pause/edit/resume transport is the next Phase 3 slice; these controls stay off until that runtime is connected.</p>
+              <p className="muted-copy">Request and response breakpoints use this rule’s match criteria. Enable them in the Breakpoints tab below to pause matching traffic, edit it, continue it, or cancel the flow.</p>
             </section>
 
             <div className="workspace-actions"><button className="secondary danger-action" onClick={() => void remove()} disabled={busy}>Delete rule</button></div>
