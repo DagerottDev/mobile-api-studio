@@ -24,6 +24,7 @@ pub struct ReplayBodyDraft {
     pub is_binary: bool,
     pub content_type: Option<String>,
     pub use_original: bool,
+    pub source_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
