@@ -1,4 +1,5 @@
 mod breakpoint_commands;
+mod compare_commands;
 mod fixture_commands;
 mod inspect;
 mod mock_commands;
@@ -155,35 +156,23 @@ fn list_devices() -> DeviceDiscoveryPayload {
         });
     }
 
-    DeviceDiscoveryPayload {
-        devices,
-        diagnostics,
-    }
+    DeviceDiscoveryPayload { devices, diagnostics }
 }
 
 #[tauri::command]
 fn list_flows(state: State<'_, AppState>) -> Result<Vec<FlowSummary>, AppError> {
-    state
-        .database
-        .list_flows(5_000)
-        .map_err(|error| AppError::storage(error.to_string()))
+    state.database.list_flows(5_000).map_err(|error| AppError::storage(error.to_string()))
 }
 
 #[tauri::command]
 fn list_sessions(state: State<'_, AppState>) -> Result<Vec<CaptureSession>, AppError> {
-    state
-        .database
-        .list_sessions(100)
-        .map_err(|error| AppError::storage(error.to_string()))
+    state.database.list_sessions(100).map_err(|error| AppError::storage(error.to_string()))
 }
 
 #[tauri::command]
 async fn current_connection(state: State<'_, AppState>) -> Result<ConnectionSnapshot, AppError> {
     let active = state.active_connection.lock().await;
-    Ok(active
-        .as_ref()
-        .map(connection_snapshot)
-        .unwrap_or_else(disconnected_snapshot))
+    Ok(active.as_ref().map(connection_snapshot).unwrap_or_else(disconnected_snapshot))
 }
 
 #[tauri::command]
@@ -193,60 +182,34 @@ async fn connect_device(
     state: State<'_, AppState>,
 ) -> Result<ConnectDeviceResult, AppError> {
     if state.active_connection.lock().await.is_some() {
-        return Err(AppError::new(
-            "connection_already_active",
-            "Disconnect the active capture session before connecting another runtime.",
-            true,
-        ));
+        return Err(AppError::new("connection_already_active", "Disconnect the active capture session before connecting another runtime.", true));
     }
-
     if state.rollback_path.exists() {
-        return Err(AppError::new(
-            "pending_connection_rollback",
-            "A previous connection left device changes pending. Recover them before starting another capture.",
-            true,
-        ));
+        return Err(AppError::new("pending_connection_rollback", "A previous connection left device changes pending. Recover them before starting another capture.", true));
     }
 
     let timestamp = now_epoch_millis()?;
     let session_id = format!("session-{timestamp}");
     let is_android = device_id.starts_with("android:");
     let is_ios = device_id.starts_with("ios:");
-
     if !is_android && !is_ios {
-        return Err(AppError::new(
-            "unsupported_device",
-            "Only discovered iOS Simulators and Android Emulators can be connected.",
-            true,
-        ));
+        return Err(AppError::new("unsupported_device", "Only discovered iOS Simulators and Android Emulators can be connected.", true));
     }
 
     let listen_host = if is_android { "0.0.0.0" } else { "127.0.0.1" };
-    let strategy = if is_android {
-        "android_adb_global_proxy"
-    } else {
-        "ios_manual_proxy"
-    };
-
-    let handle = state
-        .capture_engine
-        .start(CaptureConfig {
-            session_id: session_id.clone(),
-            listen_host: listen_host.into(),
-            listen_port: DEFAULT_CAPTURE_PORT,
-        })
-        .await
-        .map_err(capture_error_to_app_error)?;
+    let strategy = if is_android { "android_adb_global_proxy" } else { "ios_manual_proxy" };
+    let handle = state.capture_engine.start(CaptureConfig {
+        session_id: session_id.clone(),
+        listen_host: listen_host.into(),
+        listen_port: DEFAULT_CAPTURE_PORT,
+    }).await.map_err(capture_error_to_app_error)?;
 
     let mut diagnostics = Vec::new();
     let mut previous_android_proxy = None;
 
     if is_android {
         let provider = AndroidDeviceProvider;
-        previous_android_proxy = provider
-            .get_http_proxy(&device_id)
-            .map_err(device_error_to_app_error)?;
-
+        previous_android_proxy = provider.get_http_proxy(&device_id).map_err(device_error_to_app_error)?;
         let journal = RollbackJournal {
             schema_version: SCHEMA_VERSION,
             device_id: device_id.clone(),
@@ -256,23 +219,18 @@ async fn connect_device(
             ios_ca_installed: false,
         };
         save_rollback_journal(&state.rollback_path, &journal)?;
-
         if let Err(error) = provider.set_http_proxy(&device_id, ANDROID_HOST_ALIAS, DEFAULT_CAPTURE_PORT) {
             let _ = state.capture_engine.stop(handle.clone()).await;
             let _ = restore_android_proxy(&provider, &device_id, previous_android_proxy.as_deref());
             let _ = clear_rollback_journal(&state.rollback_path);
             return Err(device_error_to_app_error(error));
         }
-
         diagnostics.push(ConnectionDiagnostic {
             code: "android_ca_trust_guided".into(),
             title: "HTTPS trust may require app configuration".into(),
             message: "The emulator is routed through Mobile API Studio. HTTPS interception also requires the app to trust the mitmproxy CA.".into(),
             recoverable: true,
-            suggested_action: Some(
-                "For development builds, trust user-added CAs with Android network security configuration, or install the CA manually from mitm.it. Certificate-pinned apps require an app-side debug path rather than proxy bypassing."
-                    .into(),
-            ),
+            suggested_action: Some("For development builds, trust user-added CAs with Android network security configuration, or install the CA manually from mitm.it. Certificate-pinned apps require an app-side debug path rather than proxy bypassing.".into()),
         });
     } else {
         let certificate = wait_for_certificate(&state.capture_engine.certificate_path()).await?;
@@ -285,34 +243,24 @@ async fn connect_device(
             ios_ca_installed: true,
         };
         save_rollback_journal(&state.rollback_path, &journal)?;
-
         if let Err(error) = IosDeviceProvider.install_root_ca(&device_id, &certificate) {
             let _ = state.capture_engine.stop(handle.clone()).await;
             let _ = clear_rollback_journal(&state.rollback_path);
             return Err(device_error_to_app_error(error));
         }
-
         diagnostics.push(ConnectionDiagnostic {
             code: "ios_proxy_manual_configuration".into(),
             title: "Configure the Simulator proxy manually".into(),
-            message: format!(
-                "The capture engine is listening on 127.0.0.1:{DEFAULT_CAPTURE_PORT}, but Mobile API Studio does not change macOS/iOS proxy settings automatically."
-            ),
+            message: format!("The capture engine is listening on 127.0.0.1:{DEFAULT_CAPTURE_PORT}, but Mobile API Studio does not change macOS/iOS proxy settings automatically."),
             recoverable: true,
-            suggested_action: Some(
-                "Route the Simulator through the local proxy for this session. The app intentionally avoids changing system-wide macOS proxy settings automatically."
-                    .into(),
-            ),
+            suggested_action: Some("Route the Simulator through the local proxy for this session. The app intentionally avoids changing system-wide macOS proxy settings automatically.".into()),
         });
         diagnostics.push(ConnectionDiagnostic {
             code: "ios_ca_full_trust_required".into(),
             title: "Enable full trust for the capture CA".into(),
             message: "The CA was added to the Simulator root store; recent iOS versions can still require enabling full trust in Certificate Trust Settings.".into(),
             recoverable: true,
-            suggested_action: Some(
-                "In the Simulator open Settings → General → About → Certificate Trust Settings and enable full trust for the mitmproxy certificate."
-                    .into(),
-            ),
+            suggested_action: Some("In the Simulator open Settings → General → About → Certificate Trust Settings and enable full trust for the mitmproxy certificate.".into()),
         });
     }
 
@@ -329,54 +277,25 @@ async fn connect_device(
         capture_engine: Some("mitmdump".into()),
         notes: None,
     };
-    state
-        .database
-        .create_session(&session)
-        .map_err(|error| AppError::storage(error.to_string()))?;
+    state.database.create_session(&session).map_err(|error| AppError::storage(error.to_string()))?;
 
-    let active = ActiveConnection {
-        handle,
-        device_id,
-        strategy: strategy.into(),
-        previous_android_proxy,
-    };
+    let active = ActiveConnection { handle, device_id, strategy: strategy.into(), previous_android_proxy };
     let snapshot = connection_snapshot(&active);
     *state.active_connection.lock().await = Some(active);
-
-    Ok(ConnectDeviceResult {
-        connection: snapshot,
-        diagnostics,
-    })
+    Ok(ConnectDeviceResult { connection: snapshot, diagnostics })
 }
 
 #[tauri::command]
 async fn disconnect_device(state: State<'_, AppState>) -> Result<ConnectionSnapshot, AppError> {
     let active = state.active_connection.lock().await.take();
-    let Some(active) = active else {
-        return Ok(disconnected_snapshot());
-    };
-
+    let Some(active) = active else { return Ok(disconnected_snapshot()) };
     if active.device_id.starts_with("android:") {
-        restore_android_proxy(
-            &AndroidDeviceProvider,
-            &active.device_id,
-            active.previous_android_proxy.as_deref(),
-        )?;
+        restore_android_proxy(&AndroidDeviceProvider, &active.device_id, active.previous_android_proxy.as_deref())?;
     }
-
-    state
-        .capture_engine
-        .stop(active.handle.clone())
-        .await
-        .map_err(capture_error_to_app_error)?;
-
+    state.capture_engine.stop(active.handle.clone()).await.map_err(capture_error_to_app_error)?;
     let ended_at = now_epoch_millis()?;
-    state
-        .database
-        .complete_session(&active.handle.session_id, &ended_at)
-        .map_err(|error| AppError::storage(error.to_string()))?;
+    state.database.complete_session(&active.handle.session_id, &ended_at).map_err(|error| AppError::storage(error.to_string()))?;
     clear_rollback_journal(&state.rollback_path)?;
-
     Ok(disconnected_snapshot())
 }
 
@@ -387,18 +306,11 @@ fn pending_rollback(state: State<'_, AppState>) -> Result<Option<RollbackJournal
 
 #[tauri::command]
 fn recover_pending_rollback(state: State<'_, AppState>) -> Result<Vec<ConnectionDiagnostic>, AppError> {
-    let Some(journal) = load_rollback_journal(&state.rollback_path)? else {
-        return Ok(Vec::new());
-    };
-
+    let Some(journal) = load_rollback_journal(&state.rollback_path)? else { return Ok(Vec::new()) };
     let mut diagnostics = Vec::new();
     match journal.platform {
         DevicePlatform::Android => {
-            restore_android_proxy(
-                &AndroidDeviceProvider,
-                &journal.device_id,
-                journal.previous_android_proxy.as_deref(),
-            )?;
+            restore_android_proxy(&AndroidDeviceProvider, &journal.device_id, journal.previous_android_proxy.as_deref())?;
             diagnostics.push(ConnectionDiagnostic {
                 code: "android_proxy_restored".into(),
                 title: "Android proxy restored".into(),
@@ -407,20 +319,14 @@ fn recover_pending_rollback(state: State<'_, AppState>) -> Result<Vec<Connection
                 suggested_action: None,
             });
         }
-        DevicePlatform::Ios => {
-            diagnostics.push(ConnectionDiagnostic {
-                code: "ios_ca_left_installed".into(),
-                title: "Simulator CA remains installed".into(),
-                message: "Mobile API Studio does not reset the Simulator keychain automatically because that could delete unrelated developer credentials.".into(),
-                recoverable: true,
-                suggested_action: Some(
-                    "You may leave the locally generated CA installed, disable its full-trust toggle, or remove it manually if desired."
-                        .into(),
-                ),
-            });
-        }
+        DevicePlatform::Ios => diagnostics.push(ConnectionDiagnostic {
+            code: "ios_ca_left_installed".into(),
+            title: "Simulator CA remains installed".into(),
+            message: "Mobile API Studio does not reset the Simulator keychain automatically because that could delete unrelated developer credentials.".into(),
+            recoverable: true,
+            suggested_action: Some("You may leave the locally generated CA installed, disable its full-trust toggle, or remove it manually if desired.".into()),
+        }),
     }
-
     clear_rollback_journal(&state.rollback_path)?;
     Ok(diagnostics)
 }
@@ -431,91 +337,48 @@ fn connection_snapshot(active: &ActiveConnection) -> ConnectionSnapshot {
         session_id: Some(active.handle.session_id.clone()),
         device_id: Some(active.device_id.clone()),
         strategy: Some(active.strategy.clone()),
-        proxy_host: Some(if active.device_id.starts_with("android:") {
-            ANDROID_HOST_ALIAS.into()
-        } else {
-            "127.0.0.1".into()
-        }),
+        proxy_host: Some(if active.device_id.starts_with("android:") { ANDROID_HOST_ALIAS.into() } else { "127.0.0.1".into() }),
         proxy_port: Some(active.handle.listen_port),
     }
 }
 
 fn disconnected_snapshot() -> ConnectionSnapshot {
-    ConnectionSnapshot {
-        connected: false,
-        session_id: None,
-        device_id: None,
-        strategy: None,
-        proxy_host: None,
-        proxy_port: None,
-    }
+    ConnectionSnapshot { connected: false, session_id: None, device_id: None, strategy: None, proxy_host: None, proxy_port: None }
 }
 
-fn restore_android_proxy(
-    provider: &AndroidDeviceProvider,
-    device_id: &str,
-    previous: Option<&str>,
-) -> Result<(), AppError> {
+fn restore_android_proxy(provider: &AndroidDeviceProvider, device_id: &str, previous: Option<&str>) -> Result<(), AppError> {
     match previous {
         Some(proxy) => {
-            let (host, port) = proxy.rsplit_once(':').ok_or_else(|| {
-                AppError::new(
-                    "android_proxy_restore_invalid",
-                    format!("Unable to parse previous Android proxy value: {proxy}"),
-                    true,
-                )
-            })?;
-            let port = port.parse::<u16>().map_err(|error| {
-                AppError::new("android_proxy_restore_invalid", error.to_string(), true)
-            })?;
-            provider
-                .set_http_proxy(device_id, host, port)
-                .map_err(device_error_to_app_error)
+            let (host, port) = proxy.rsplit_once(':').ok_or_else(|| AppError::new("android_proxy_restore_invalid", format!("Unable to parse previous Android proxy value: {proxy}"), true))?;
+            let port = port.parse::<u16>().map_err(|error| AppError::new("android_proxy_restore_invalid", error.to_string(), true))?;
+            provider.set_http_proxy(device_id, host, port).map_err(device_error_to_app_error)
         }
-        None => provider
-            .clear_http_proxy(device_id)
-            .map_err(device_error_to_app_error),
+        None => provider.clear_http_proxy(device_id).map_err(device_error_to_app_error),
     }
 }
 
 async fn wait_for_certificate(path: &Path) -> Result<PathBuf, AppError> {
     for _ in 0..40 {
-        if path.is_file() {
-            return Ok(path.to_path_buf());
-        }
+        if path.is_file() { return Ok(path.to_path_buf()) }
         sleep(Duration::from_millis(50)).await;
     }
-
-    Err(AppError::new(
-        "capture_ca_not_ready",
-        format!("Capture CA was not created at {}", path.display()),
-        true,
-    ))
+    Err(AppError::new("capture_ca_not_ready", format!("Capture CA was not created at {}", path.display()), true))
 }
 
 fn save_rollback_journal(path: &Path, journal: &RollbackJournal) -> Result<(), AppError> {
-    let bytes = serde_json::to_vec_pretty(journal)
-        .map_err(|error| AppError::new("rollback_serialize_failed", error.to_string(), true))?;
-    fs::write(path, bytes)
-        .map_err(|error| AppError::new("rollback_write_failed", error.to_string(), true))
+    let bytes = serde_json::to_vec_pretty(journal).map_err(|error| AppError::new("rollback_serialize_failed", error.to_string(), true))?;
+    fs::write(path, bytes).map_err(|error| AppError::new("rollback_write_failed", error.to_string(), true))
 }
 
 fn load_rollback_journal(path: &Path) -> Result<Option<RollbackJournal>, AppError> {
-    if !path.is_file() {
-        return Ok(None);
-    }
-    let bytes = fs::read(path)
-        .map_err(|error| AppError::new("rollback_read_failed", error.to_string(), true))?;
-    let journal = serde_json::from_slice(&bytes)
-        .map_err(|error| AppError::new("rollback_parse_failed", error.to_string(), true))?;
+    if !path.is_file() { return Ok(None) }
+    let bytes = fs::read(path).map_err(|error| AppError::new("rollback_read_failed", error.to_string(), true))?;
+    let journal = serde_json::from_slice(&bytes).map_err(|error| AppError::new("rollback_parse_failed", error.to_string(), true))?;
     Ok(Some(journal))
 }
 
 fn clear_rollback_journal(path: &Path) -> Result<(), AppError> {
-    if path.exists() {
-        fs::remove_file(path)
-            .map_err(|error| AppError::new("rollback_clear_failed", error.to_string(), true))?;
-    }
+    if path.exists() { fs::remove_file(path).map_err(|error| AppError::new("rollback_clear_failed", error.to_string(), true))? }
     Ok(())
 }
 
@@ -524,9 +387,7 @@ fn spawn_capture_ingestion(database: Database, body_store: BodyStore, engine: Ar
     tauri::async_runtime::spawn(async move {
         loop {
             match receiver.recv().await {
-                Ok(event) => {
-                    let _ = inspect::ingest_capture_event(&database, &body_store, event);
-                }
+                Ok(event) => { let _ = inspect::ingest_capture_event(&database, &body_store, event); }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -540,11 +401,7 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
     let sdk_database = SdkDatabase::open(database.path()).map_err(|error| error.to_string())?;
     let body_store = BodyStore::new(app_data_dir.join("bodies")).map_err(|error| error.to_string())?;
     let capture_executable = sidecar_commands::configured_capture_executable(&database)?;
-    let capture_engine = Arc::new(
-        MitmDumpEngine::new(addon_path, app_data_dir.join("mitmproxy"))
-            .with_executable(capture_executable),
-    );
-
+    let capture_engine = Arc::new(MitmDumpEngine::new(addon_path, app_data_dir.join("mitmproxy")).with_executable(capture_executable));
     Ok(AppState {
         database,
         sdk_database,
@@ -556,55 +413,26 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
 }
 
 fn resolve_addon_path(app: &tauri::App) -> Result<PathBuf, String> {
-    let development_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../sidecars/mitm-addon/mas_bridge.py");
-    if development_path.is_file() {
-        return Ok(development_path);
-    }
-
+    let development_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../sidecars/mitm-addon/mas_bridge.py");
+    if development_path.is_file() { return Ok(development_path) }
     let resource_dir = app.path().resource_dir().map_err(|error| error.to_string())?;
     Ok(resource_dir.join("sidecars/mitm-addon/mas_bridge.py"))
 }
 
-fn capture_error_to_app_error(error: capture_core::CaptureError) -> AppError {
-    AppError::new(error.code, error.message, error.recoverable)
-}
-
-fn device_error_to_app_error(error: impl IntoDeviceError) -> AppError {
-    let error = error.into_parts();
-    AppError::new(error.0, error.1, error.2)
-}
-
-trait IntoDeviceError {
-    fn into_parts(self) -> (String, String, bool);
-}
-
-impl IntoDeviceError for device_android::DeviceError {
-    fn into_parts(self) -> (String, String, bool) {
-        (self.code, self.message, self.recoverable)
-    }
-}
-
-impl IntoDeviceError for device_ios::DeviceError {
-    fn into_parts(self) -> (String, String, bool) {
-        (self.code, self.message, self.recoverable)
-    }
-}
+fn capture_error_to_app_error(error: capture_core::CaptureError) -> AppError { AppError::new(error.code, error.message, error.recoverable) }
+fn device_error_to_app_error(error: impl IntoDeviceError) -> AppError { let error = error.into_parts(); AppError::new(error.0, error.1, error.2) }
+trait IntoDeviceError { fn into_parts(self) -> (String, String, bool); }
+impl IntoDeviceError for device_android::DeviceError { fn into_parts(self) -> (String, String, bool) { (self.code, self.message, self.recoverable) } }
+impl IntoDeviceError for device_ios::DeviceError { fn into_parts(self) -> (String, String, bool) { (self.code, self.message, self.recoverable) } }
 
 fn now_epoch_millis() -> Result<String, AppError> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| AppError::initialization(error.to_string()))?;
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| AppError::initialization(error.to_string()))?;
     Ok(duration.as_millis().to_string())
 }
 
 fn sanitize_session_name(name: String) -> String {
     let trimmed = name.trim();
-    if trimmed.is_empty() {
-        "Untitled Session".to_string()
-    } else {
-        trimmed.chars().take(120).collect()
-    }
+    if trimmed.is_empty() { "Untitled Session".to_string() } else { trimmed.chars().take(120).collect() }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -614,11 +442,7 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let addon_path = resolve_addon_path(app).map_err(std::io::Error::other)?;
             let state = initialize_state(app_data_dir, addon_path).map_err(std::io::Error::other)?;
-            spawn_capture_ingestion(
-                state.database.clone(),
-                state.body_store.clone(),
-                state.capture_engine.clone(),
-            );
+            spawn_capture_ingestion(state.database.clone(), state.body_store.clone(), state.capture_engine.clone());
             let sdk_server = Arc::new(SdkIngestionServer::localhost(SDK_INGESTION_PORT));
             sdk_commands::spawn_sdk_ingestion(state.sdk_database.clone(), sdk_server);
             app.manage(state);
@@ -685,6 +509,8 @@ pub fn run() {
             sdk_commands::search_sdk_events,
             sdk_commands::sdk_flow_ids_matching,
             sdk_commands::sdk_enrichment_for_flow,
+            compare_commands::compare_sessions,
+            compare_commands::session_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mobile API Studio");
