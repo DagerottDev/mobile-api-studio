@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { ConnectView } from "./components/ConnectView";
 import { ReplayView } from "./components/ReplayView";
+import { SettingsView } from "./components/SettingsView";
 import { TrafficView } from "./components/TrafficView";
 import { WorkspaceView } from "./components/WorkspaceView";
 import type { CaptureSession } from "./types";
@@ -80,7 +81,7 @@ function App() {
                     ? "Edit and resend captured requests"
                     : route === "Workspace"
                       ? "Manage sessions, saved requests, and environments"
-                      : "Mobile API Studio preferences and diagnostics"}
+                      : "Connection Doctor, onboarding, backup, and restore"}
             </p>
           </div>
         </header>
@@ -89,17 +90,7 @@ function App() {
         {route === "Traffic" ? <TrafficView /> : null}
         {route === "Replay" ? <ReplayView /> : null}
         {route === "Workspace" ? <WorkspaceView /> : null}
-
-        {route === "Settings" ? (
-          <section className="placeholder panel">
-            <span className="eyebrow">Settings</span>
-            <h2>Connection Doctor and onboarding are the next Phase 2 slice.</h2>
-            <p>
-              The reusable workspace is now available for sessions, collections, environments, and
-              Keychain-backed secrets. Settings will surface prerequisite diagnostics and guided setup.
-            </p>
-          </section>
-        ) : null}
+        {route === "Settings" ? <SettingsView /> : null}
       </main>
     </div>
   );
