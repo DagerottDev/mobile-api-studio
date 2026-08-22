@@ -171,5 +171,5 @@ fn shell_quote(value: &str) -> String {
     if value.is_empty() {
         return "''".into();
     }
-    format!("'{}'", value.replace('\\'', "'\\"'\\"'"))
+    format!("'{}'", value.replace("'", "'\"'\"'"))
 }
