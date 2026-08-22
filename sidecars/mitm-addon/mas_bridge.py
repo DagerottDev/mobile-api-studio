@@ -27,10 +27,7 @@ def _millis(value: float | None) -> int | None:
 
 
 def _headers(headers) -> list[dict]:
-    return [
-        {"name": name, "value": value}
-        for name, value in headers.items(multi=True)
-    ]
+    return [{"name": name, "value": value} for name, value in headers.items(multi=True)]
 
 
 def _is_binary(content_type: str | None, encoding: str | None) -> bool:
@@ -52,7 +49,6 @@ def _is_binary(content_type: str | None, encoding: str | None) -> bool:
 def _body(raw_content: bytes | None, content_type: str | None, encoding: str | None) -> dict | None:
     if raw_content is None:
         return None
-
     is_truncated = len(raw_content) > MAX_BODY_BYTES
     captured = raw_content[:MAX_BODY_BYTES]
     return {
@@ -128,11 +124,7 @@ def _rules() -> list[dict]:
                 _RULES_DOCUMENT = document
                 _RULES_MTIME_NS = stat.st_mtime_ns
         except (OSError, json.JSONDecodeError) as exc:
-            _emit({
-                "type": "mock_rules_failed",
-                "code": "mock_rules_reload_failed",
-                "message": str(exc),
-            })
+            _emit({"type": "mock_rules_failed", "code": "mock_rules_reload_failed", "message": str(exc)})
             return []
 
     if not _RULES_DOCUMENT.get("enabled", True):
@@ -140,29 +132,22 @@ def _rules() -> list[dict]:
     return _RULES_DOCUMENT.get("rules", [])
 
 
-def _normalized_path(path: str) -> str:
-    segments = []
-    for segment in path.split("?")[0].split("/"):
-        if not segment:
-            continue
-        if _dynamic_segment(segment):
-            segments.append(":id")
-        else:
-            segments.append(segment)
-    return "/" + "/".join(segments)
-
-
-def _dynamic_segment(segment: str) -> bool:
+def _normalized_segment(segment: str) -> str:
     if segment.isdigit():
-        return True
+        return ":id"
     lower = segment.lower()
     if len(lower) == 36:
         hyphens = {8, 13, 18, 23}
         if all((char == "-" if index in hyphens else char in "0123456789abcdef") for index, char in enumerate(lower)):
-            return True
+            return ":uuid"
     if len(lower) >= 16 and all(char in "0123456789abcdef" for char in lower):
-        return True
-    return len(lower) >= 20 and all(char.isalnum() or char in "-_" for char in lower)
+        return ":hex"
+    return segment
+
+
+def _normalized_path(path: str) -> str:
+    segments = [_normalized_segment(segment) for segment in path.split("?")[0].split("/") if segment]
+    return "/" + "/".join(segments)
 
 
 def _matching_rule(flow: http.HTTPFlow) -> dict | None:
@@ -180,17 +165,25 @@ def _matching_rule(flow: http.HTTPFlow) -> dict | None:
         if host and host.lower() != request_host.lower():
             continue
         pattern = rule.get("pathPattern") or "/"
-        path_match = rule.get("pathMatch", "exact")
-        candidate = _normalized_path(path) if path_match == "normalized" else path
+        candidate = _normalized_path(path) if rule.get("pathMatch", "exact") == "normalized" else path
         if pattern != candidate:
             continue
         return rule
     return None
 
 
+def _rule_by_id(rule_id: str | None) -> dict | None:
+    if not rule_id:
+        return None
+    for rule in _rules():
+        if str(rule.get("id") or "") == rule_id and rule.get("enabled", True):
+            return rule
+    return None
+
+
 def _mark_mock(flow: http.HTTPFlow, rule: dict) -> None:
-    flow.metadata["mas_mock_rule_id"] = rule.get("id")
-    flow.metadata["mas_mock_rule_name"] = rule.get("name")
+    flow.metadata["mas_mock_rule_id"] = str(rule.get("id") or "")
+    flow.metadata["mas_mock_rule_name"] = str(rule.get("name") or "Mock rule")
 
 
 def _breakpoint_envelope(flow: http.HTTPFlow, rule: dict, stage: str, breakpoint_id: str) -> dict:
@@ -199,19 +192,11 @@ def _breakpoint_envelope(flow: http.HTTPFlow, rule: dict, stage: str, breakpoint
     now_ms = int(time.time() * 1000)
     if stage == "response" and response is not None:
         headers = _headers(response.headers)
-        body = _breakpoint_body(
-            response.raw_content,
-            response.headers.get("content-type"),
-            response.headers.get("content-encoding"),
-        )
+        body = _breakpoint_body(response.raw_content, response.headers.get("content-type"), response.headers.get("content-encoding"))
         status_code = response.status_code
     else:
         headers = _headers(request.headers)
-        body = _breakpoint_body(
-            request.raw_content,
-            request.headers.get("content-type"),
-            request.headers.get("content-encoding"),
-        )
+        body = _breakpoint_body(request.raw_content, request.headers.get("content-type"), request.headers.get("content-encoding"))
         status_code = None
 
     return {
@@ -238,12 +223,7 @@ async def _wait_for_breakpoint(flow: http.HTTPFlow, rule: dict, stage: str) -> d
     try:
         _atomic_json(pending_path, _breakpoint_envelope(flow, rule, stage, breakpoint_id))
     except OSError as exc:
-        _emit({
-            "type": "mock_rules_failed",
-            "code": "breakpoint_publish_failed",
-            "message": str(exc),
-            "rule_id": rule.get("id"),
-        })
+        _emit({"type": "mock_rules_failed", "code": "breakpoint_publish_failed", "message": str(exc), "rule_id": rule.get("id")})
         return None
 
     deadline = time.monotonic() + max(1, BREAKPOINT_TIMEOUT_MS) / 1000.0
@@ -254,12 +234,7 @@ async def _wait_for_breakpoint(flow: http.HTTPFlow, rule: dict, stage: str) -> d
                     with open(decision_path, "r", encoding="utf-8") as handle:
                         return json.load(handle)
                 except (OSError, json.JSONDecodeError) as exc:
-                    _emit({
-                        "type": "mock_rules_failed",
-                        "code": "breakpoint_decision_invalid",
-                        "message": str(exc),
-                        "rule_id": rule.get("id"),
-                    })
+                    _emit({"type": "mock_rules_failed", "code": "breakpoint_decision_invalid", "message": str(exc), "rule_id": rule.get("id")})
                     return None
                 finally:
                     try:
@@ -287,9 +262,25 @@ def _replace_headers(headers, rows: list[dict] | None) -> None:
     headers.clear()
     for row in rows:
         name = str(row.get("name") or "").strip()
-        if not name:
-            continue
-        headers.add(name, str(row.get("value") or ""))
+        if name:
+            headers.add(name, str(row.get("value") or ""))
+
+
+def _apply_decision_body(message, decision: dict) -> None:
+    if decision.get("clearBody", False):
+        message.raw_content = b""
+        message.headers.pop("content-length", None)
+        message.headers.pop("content-encoding", None)
+        return
+    body = decision.get("body")
+    if body is None:
+        return
+    message.raw_content = _decode_breakpoint_body(body)
+    content_type = body.get("contentType")
+    if content_type:
+        message.headers["content-type"] = str(content_type)
+    message.headers.pop("content-length", None)
+    message.headers.pop("content-encoding", None)
 
 
 def _apply_request_breakpoint_decision(flow: http.HTTPFlow, decision: dict | None) -> bool:
@@ -298,7 +289,6 @@ def _apply_request_breakpoint_decision(flow: http.HTTPFlow, decision: dict | Non
     if decision.get("action") == "cancel":
         flow.kill()
         return False
-
     method = decision.get("method")
     if method:
         flow.request.method = str(method).upper()
@@ -306,18 +296,10 @@ def _apply_request_breakpoint_decision(flow: http.HTTPFlow, decision: dict | Non
     if url:
         flow.request.url = str(url)
     _replace_headers(flow.request.headers, decision.get("headers"))
-    if decision.get("clearBody", False):
-        flow.request.raw_content = b""
-    elif decision.get("body") is not None:
-        try:
-            flow.request.raw_content = _decode_breakpoint_body(decision.get("body"))
-        except (ValueError, TypeError) as exc:
-            _emit({
-                "type": "mock_rules_failed",
-                "code": "breakpoint_request_body_invalid",
-                "message": str(exc),
-                "rule_id": flow.metadata.get("mas_mock_rule_id"),
-            })
+    try:
+        _apply_decision_body(flow.request, decision)
+    except (ValueError, TypeError) as exc:
+        _emit({"type": "mock_rules_failed", "code": "breakpoint_request_body_invalid", "message": str(exc), "rule_id": flow.metadata.get("mas_mock_rule_id")})
     return True
 
 
@@ -329,23 +311,14 @@ def _apply_response_breakpoint_decision(flow: http.HTTPFlow, decision: dict | No
         return False
     if flow.response is None:
         return True
-
     status_code = decision.get("statusCode")
     if status_code is not None:
         flow.response.status_code = int(status_code)
     _replace_headers(flow.response.headers, decision.get("headers"))
-    if decision.get("clearBody", False):
-        flow.response.raw_content = b""
-    elif decision.get("body") is not None:
-        try:
-            flow.response.raw_content = _decode_breakpoint_body(decision.get("body"))
-        except (ValueError, TypeError) as exc:
-            _emit({
-                "type": "mock_rules_failed",
-                "code": "breakpoint_response_body_invalid",
-                "message": str(exc),
-                "rule_id": flow.metadata.get("mas_mock_rule_id"),
-            })
+    try:
+        _apply_decision_body(flow.response, decision)
+    except (ValueError, TypeError) as exc:
+        _emit({"type": "mock_rules_failed", "code": "breakpoint_response_body_invalid", "message": str(exc), "rule_id": flow.metadata.get("mas_mock_rule_id")})
     return True
 
 
@@ -384,7 +357,6 @@ def _set_json_pointer(document, pointer: str, value, remove: bool) -> None:
             target = target[part]
         else:
             raise ValueError(f"JSON pointer traversed non-container at {part}")
-
     leaf = parts[-1]
     if isinstance(target, list):
         index = int(leaf)
@@ -408,34 +380,24 @@ def _apply_json_mutations(flow: http.HTTPFlow, mutations: list[dict]) -> None:
     try:
         document = json.loads(raw.decode("utf-8"))
         for mutation in mutations:
-            _set_json_pointer(
-                document,
-                str(mutation.get("pointer") or ""),
-                mutation.get("value"),
-                bool(mutation.get("remove", False)),
-            )
+            _set_json_pointer(document, str(mutation.get("pointer") or ""), mutation.get("value"), bool(mutation.get("remove", False)))
         flow.response.raw_content = json.dumps(document, separators=(",", ":")).encode("utf-8")
         if not flow.response.headers.get("content-type"):
             flow.response.headers["content-type"] = "application/json"
+        flow.response.headers.pop("content-length", None)
+        flow.response.headers.pop("content-encoding", None)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError, KeyError, IndexError) as exc:
-        _emit({
-            "type": "mock_rules_failed",
-            "code": "mock_json_mutation_failed",
-            "message": str(exc),
-            "rule_id": flow.metadata.get("mas_mock_rule_id"),
-        })
+        _emit({"type": "mock_rules_failed", "code": "mock_json_mutation_failed", "message": str(exc), "rule_id": flow.metadata.get("mas_mock_rule_id")})
 
 
 def _apply_body_override(response: http.Response, override: dict) -> None:
     encoding = override.get("encoding", "text")
     data = override.get("data", "")
-    if encoding == "base64":
-        response.raw_content = base64.b64decode(data)
-    else:
-        response.raw_content = str(data).encode("utf-8")
+    response.raw_content = base64.b64decode(data) if encoding == "base64" else str(data).encode("utf-8")
     content_type = override.get("contentType")
     if content_type:
         response.headers["content-type"] = content_type
+    response.headers.pop("content-length", None)
     response.headers.pop("content-encoding", None)
 
 
@@ -456,7 +418,7 @@ async def response(flow: http.HTTPFlow) -> None:
     if response is None:
         return
 
-    rule = _matching_rule(flow)
+    rule = _rule_by_id(flow.metadata.get("mas_mock_rule_id")) or _matching_rule(flow)
     if rule is not None:
         _mark_mock(flow, rule)
         latency_ms = int(rule.get("latencyMs") or 0)
@@ -470,12 +432,7 @@ async def response(flow: http.HTTPFlow) -> None:
             try:
                 _apply_body_override(response, body_override)
             except (ValueError, TypeError) as exc:
-                _emit({
-                    "type": "mock_rules_failed",
-                    "code": "mock_body_override_failed",
-                    "message": str(exc),
-                    "rule_id": rule.get("id"),
-                })
+                _emit({"type": "mock_rules_failed", "code": "mock_body_override_failed", "message": str(exc), "rule_id": rule.get("id")})
         _apply_header_mutations(response, rule.get("responseHeaders") or [])
         _apply_json_mutations(flow, rule.get("jsonMutations") or [])
 
@@ -490,7 +447,6 @@ async def response(flow: http.HTTPFlow) -> None:
     parsed = urlsplit(request.url)
     response_size = len(response.raw_content) if response.raw_content is not None else None
     started_at = str(_millis(request.timestamp_start) or 0)
-
     request_content_type = request.headers.get("content-type")
     response_content_type = response.headers.get("content-type")
 
@@ -503,24 +459,14 @@ async def response(flow: http.HTTPFlow) -> None:
         "path": parsed.path or "/",
         "query": parsed.query or None,
         "headers": _headers(request.headers),
-        "body": _body(
-            request.raw_content,
-            request_content_type,
-            request.headers.get("content-encoding"),
-        ),
+        "body": _body(request.raw_content, request_content_type, request.headers.get("content-encoding")),
     }
-
     response_payload = {
         "status_code": response.status_code,
         "reason": response.reason or None,
         "headers": _headers(response.headers),
-        "body": _body(
-            response.raw_content,
-            response_content_type,
-            response.headers.get("content-encoding"),
-        ),
+        "body": _body(response.raw_content, response_content_type, response.headers.get("content-encoding")),
     }
-
     timing_payload = {
         "request_ms": _duration_ms(request.timestamp_start, request.timestamp_end),
         "server_ms": _duration_ms(request.timestamp_end, response.timestamp_start),
@@ -528,34 +474,27 @@ async def response(flow: http.HTTPFlow) -> None:
         "total_ms": _duration_ms(request.timestamp_start, response.timestamp_end),
     }
 
-    _emit(
-        {
-            "type": "flow_completed",
-            "id": flow.id,
-            "session_id": SESSION_ID,
-            "started_at": started_at,
-            "response_size_bytes": response_size,
-            "request": request_payload,
-            "response": response_payload,
-            "timing": timing_payload,
-            "mock_rule_id": flow.metadata.get("mas_mock_rule_id"),
-            "mock_rule_name": flow.metadata.get("mas_mock_rule_name"),
-        }
-    )
+    _emit({
+        "type": "flow_completed",
+        "id": flow.id,
+        "session_id": SESSION_ID,
+        "started_at": started_at,
+        "response_size_bytes": response_size,
+        "request": request_payload,
+        "response": response_payload,
+        "timing": timing_payload,
+        "mock_rule_id": flow.metadata.get("mas_mock_rule_id"),
+        "mock_rule_name": flow.metadata.get("mas_mock_rule_name"),
+    })
 
 
 def error(flow: http.HTTPFlow) -> None:
-    error_message = "Unknown proxy error"
-    if flow.error is not None:
-        error_message = flow.error.msg
-
-    _emit(
-        {
-            "type": "flow_failed",
-            "id": flow.id,
-            "code": "proxy_flow_failed",
-            "message": error_message,
-            "mock_rule_id": flow.metadata.get("mas_mock_rule_id"),
-            "mock_rule_name": flow.metadata.get("mas_mock_rule_name"),
-        }
-    )
+    error_message = flow.error.msg if flow.error is not None else "Unknown proxy error"
+    _emit({
+        "type": "flow_failed",
+        "id": flow.id,
+        "code": "proxy_flow_failed",
+        "message": error_message,
+        "mock_rule_id": flow.metadata.get("mas_mock_rule_id"),
+        "mock_rule_name": flow.metadata.get("mas_mock_rule_name"),
+    })
