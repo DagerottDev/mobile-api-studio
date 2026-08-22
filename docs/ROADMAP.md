@@ -195,7 +195,7 @@ Implemented and merged to `main` in PR #13. Formal verification is deferred.
 
 ### Implementation status
 
-Implementation complete on `phase-5/compare-ai`; integration to `main` remains. Formal verification is deferred.
+Implemented and merged to `main` in PR #15. Formal verification is deferred.
 
 ### Exit outcome
 
