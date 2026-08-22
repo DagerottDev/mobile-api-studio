@@ -2,6 +2,7 @@ use super::{replay_commands::redact_detail_for_ui, AppState};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use capture_core::{CapturedBody, CapturedFlow, CaptureEvent};
 use core_model::{AppError, BodyRef, FlowDetail, RequestDetail, ResponseDetail};
+use sdk_protocol::SDK_CORRELATION_HEADER;
 use serde::Serialize;
 use storage::{BodyStore, Database};
 use tauri::State;
@@ -67,6 +68,9 @@ pub fn export_curl(flow_id: String, state: State<'_, AppState>) -> Result<String
     parts.push(shell_quote(&request.url));
 
     for header in &request.headers {
+        if header.name.eq_ignore_ascii_case(SDK_CORRELATION_HEADER) {
+            continue;
+        }
         let value = if header.sensitive { "<redacted>" } else { &header.value };
         parts.push("--header".to_string());
         parts.push(shell_quote(&format!("{}: {}", header.name, value)));
