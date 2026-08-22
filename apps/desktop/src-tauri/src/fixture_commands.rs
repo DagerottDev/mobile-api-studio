@@ -56,6 +56,13 @@ pub fn create_fixture_from_flow(
         .body
         .as_ref()
         .map(|reference| {
+            if reference.is_truncated {
+                return Err(AppError::new(
+                    "fixture_body_truncated",
+                    "The captured response body is truncated. Create a manual fixture or recapture with a larger body limit before saving it.",
+                    true,
+                ));
+            }
             let bytes = state.body_store.read(&reference.sha256).map_err(storage_error)?;
             let (encoding, data) = if reference.is_binary {
                 (MockBodyEncoding::Base64, BASE64.encode(bytes))
@@ -76,7 +83,7 @@ pub fn create_fixture_from_flow(
     let response_headers = response
         .headers
         .iter()
-        .filter(|header| !header.sensitive)
+        .filter(|header| is_fixture_header_safe(header))
         .map(|header| MockHeaderMutation {
             name: header.name.clone(),
             value: Some(header.value.clone()),
@@ -162,7 +169,28 @@ fn validate_fixture(fixture: &MockFixture) -> Result<(), AppError> {
             true,
         ));
     }
+    if let Some(body) = fixture.response_body.as_ref() {
+        if matches!(body.encoding, MockBodyEncoding::Base64) {
+            BASE64.decode(body.data.as_bytes()).map_err(|error| {
+                AppError::new(
+                    "mock_fixture_body_invalid_base64",
+                    format!("Fixture body is not valid base64: {error}"),
+                    true,
+                )
+            })?;
+        }
+    }
     Ok(())
+}
+
+fn is_fixture_header_safe(header: &&core_model::HeaderValue) -> bool {
+    if header.sensitive {
+        return false;
+    }
+    !matches!(
+        header.name.to_ascii_lowercase().as_str(),
+        "content-length" | "content-encoding" | "transfer-encoding" | "connection"
+    )
 }
 
 fn sanitize_name(name: Option<&str>, fallback: &str) -> String {
