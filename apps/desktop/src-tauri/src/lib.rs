@@ -683,6 +683,7 @@ pub fn run() {
             sdk_commands::list_sdk_clients,
             sdk_commands::list_sdk_events,
             sdk_commands::search_sdk_events,
+            sdk_commands::sdk_flow_ids_matching,
             sdk_commands::sdk_enrichment_for_flow,
         ])
         .run(tauri::generate_context!())
