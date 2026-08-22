@@ -1,9 +1,7 @@
-use super::AppState;
+use super::{replay_commands::redact_detail_for_ui, AppState};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use capture_core::{CapturedBody, CapturedFlow, CaptureEvent};
-use core_model::{
-    AppError, BodyRef, FlowDetail, RequestDetail, ResponseDetail,
-};
+use core_model::{AppError, BodyRef, FlowDetail, RequestDetail, ResponseDetail};
 use serde::Serialize;
 use storage::{BodyStore, Database};
 use tauri::State;
@@ -24,6 +22,7 @@ pub fn get_flow_detail(
     state
         .database
         .get_flow_detail(&flow_id)
+        .map(|detail| detail.map(redact_detail_for_ui))
         .map_err(|error| AppError::storage(error.to_string()))
 }
 
