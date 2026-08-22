@@ -1,5 +1,6 @@
 mod inspect;
 mod replay_commands;
+mod workspace_commands;
 
 use capture_core::{CaptureConfig, CaptureEngine, CaptureHandle};
 use capture_mitm::MitmDumpEngine;
@@ -623,6 +624,24 @@ pub fn run() {
             inspect::export_curl,
             replay_commands::create_replay_draft,
             replay_commands::send_replay,
+            workspace_commands::update_session_metadata,
+            workspace_commands::archive_session,
+            workspace_commands::delete_session,
+            workspace_commands::search_traffic,
+            workspace_commands::list_collections,
+            workspace_commands::upsert_collection,
+            workspace_commands::delete_collection,
+            workspace_commands::list_saved_requests,
+            workspace_commands::save_flow_to_collection,
+            workspace_commands::delete_saved_request,
+            workspace_commands::list_environments,
+            workspace_commands::upsert_environment,
+            workspace_commands::set_active_environment,
+            workspace_commands::delete_environment,
+            workspace_commands::environment_snapshot,
+            workspace_commands::upsert_environment_variable,
+            workspace_commands::delete_environment_variable,
+            workspace_commands::interpolate_with_active_environment,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mobile API Studio");
