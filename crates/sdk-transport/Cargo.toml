@@ -1,0 +1,11 @@
+[package]
+name = "sdk-transport"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sdk-protocol = { path = "../sdk-protocol" }
+serde_json.workspace = true
+tokio.workspace = true
