@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "mobile-api-studio-android"
 include(":mobile-api-studio")
+include(":sample")
