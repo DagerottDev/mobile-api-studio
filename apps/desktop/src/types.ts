@@ -74,6 +74,50 @@ export interface CaptureSession {
   notes: string | null;
 }
 
+export interface HeaderValue {
+  name: string;
+  value: string;
+  sensitive: boolean;
+}
+
+export interface BodyRef {
+  sha256: string;
+  byteSize: number;
+  contentType: string | null;
+  encoding: string | null;
+  isBinary: boolean;
+  isTruncated: boolean;
+}
+
+export interface Timing {
+  dnsMs: number | null;
+  connectMs: number | null;
+  tlsMs: number | null;
+  requestMs: number | null;
+  serverMs: number | null;
+  downloadMs: number | null;
+  totalMs: number | null;
+}
+
+export interface RequestDetail {
+  method: string;
+  url: string;
+  scheme: string;
+  host: string;
+  port: number | null;
+  path: string;
+  query: string | null;
+  headers: HeaderValue[];
+  body: BodyRef | null;
+}
+
+export interface ResponseDetail {
+  statusCode: number;
+  reason: string | null;
+  headers: HeaderValue[];
+  body: BodyRef | null;
+}
+
 export interface FlowSummary {
   schemaVersion: number;
   id: string;
@@ -86,4 +130,19 @@ export interface FlowSummary {
   durationMs: number | null;
   responseSizeBytes: number | null;
   startedAt: string;
+}
+
+export interface FlowDetail {
+  summary: FlowSummary;
+  request: RequestDetail | null;
+  response: ResponseDetail | null;
+  timing: Timing;
+  errorCode: string | null;
+  errorMessage: string | null;
+}
+
+export interface BodyPayload {
+  sha256: string;
+  text: string | null;
+  base64: string | null;
 }
