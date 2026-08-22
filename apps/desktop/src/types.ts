@@ -1,6 +1,8 @@
 export type FlowSource = "proxy" | "replay" | "mock" | "sdk" | "fixture";
 export type SessionStatus = "active" | "completed" | "interrupted" | "archived";
 export type DevicePlatform = "ios" | "android";
+export type DoctorStatus = "pass" | "warning" | "fail";
+export type ImportMode = "merge" | "replace";
 
 export interface AppError {
   code: string;
@@ -258,4 +260,58 @@ export interface InterpolationResult {
   value: string;
   usedSecret: boolean;
   missingVariables: string[];
+}
+
+export interface DoctorCheck {
+  id: string;
+  title: string;
+  status: DoctorStatus;
+  detail: string;
+  action: string | null;
+}
+
+export interface ConnectionDoctorReport {
+  checks: DoctorCheck[];
+  captureExecutable: string | null;
+  bootedIosCount: number;
+  androidEmulatorCount: number;
+  pendingRollback: boolean;
+}
+
+export interface OnboardingStep {
+  key: string;
+  completed: boolean;
+  completedAt: string | null;
+}
+
+export interface PortableFlow {
+  summary: FlowSummary;
+  detail: FlowDetail | null;
+  requestBodyBase64: string | null;
+  responseBodyBase64: string | null;
+}
+
+export interface PortableSession {
+  session: CaptureSession;
+  flows: PortableFlow[];
+}
+
+export interface PortableWorkspaceBundle {
+  bundleVersion: number;
+  exportedAt: string;
+  sessions: PortableSession[];
+  collections: SavedCollection[];
+  savedRequests: SavedRequest[];
+  environments: Environment[];
+  environmentVariables: EnvironmentVariable[];
+}
+
+export interface ImportSummary {
+  sessions: number;
+  flows: number;
+  collections: number;
+  savedRequests: number;
+  environments: number;
+  variables: number;
+  secretValuesOmitted: number;
 }
