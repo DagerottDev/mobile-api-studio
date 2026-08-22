@@ -1,6 +1,7 @@
 mod inspect;
+mod replay_commands;
 
-use capture_core::{CaptureConfig, CaptureEngine, CaptureEvent, CaptureHandle};
+use capture_core::{CaptureConfig, CaptureEngine, CaptureHandle};
 use capture_mitm::MitmDumpEngine;
 use core_model::{
     AppError, CaptureSession, ConnectionDiagnostic, Device, DevicePlatform, FlowSummary,
@@ -620,6 +621,8 @@ pub fn run() {
             inspect::get_flow_detail,
             inspect::read_body,
             inspect::export_curl,
+            replay_commands::create_replay_draft,
+            replay_commands::send_replay,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mobile API Studio");
