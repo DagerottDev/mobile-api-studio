@@ -1,9 +1,9 @@
-use super::AppState;
+use super::{now_epoch_millis, AppState};
 use core_model::AppError;
 use sdk_protocol::{SdkEnvelope, SDK_CORRELATION_HEADER, SDK_EVENT_PATH, SDK_HEALTH_PATH, SDK_INGESTION_PORT};
 use sdk_storage::SdkClientRecord;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::{collections::HashSet, net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream}, time::Duration};
 use tauri::State;
 
 #[derive(Debug, Clone, Serialize)]
@@ -15,6 +15,10 @@ pub struct SdkSetupInfo {
     pub event_path: String,
     pub health_path: String,
     pub correlation_header: String,
+    pub ingestion_reachable: bool,
+    pub active_client_count: usize,
+    pub known_client_count: usize,
+    pub latest_seen_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -27,15 +31,38 @@ pub struct FlowSdkEnrichment {
 }
 
 #[tauri::command]
-pub fn sdk_setup_info() -> SdkSetupInfo {
-    SdkSetupInfo {
+pub fn sdk_setup_info(state: State<'_, AppState>) -> Result<SdkSetupInfo, AppError> {
+    let clients = state.sdk_database.list_clients().map_err(sdk_storage_error)?;
+    let now = now_epoch_millis()?.parse::<u128>().unwrap_or_default();
+    let active_client_count = clients
+        .iter()
+        .filter(|client| {
+            client
+                .last_seen_at
+                .parse::<u128>()
+                .map(|seen| now.saturating_sub(seen) <= 15_000)
+                .unwrap_or(false)
+        })
+        .count();
+    let latest_seen_at = clients
+        .iter()
+        .max_by_key(|client| client.last_seen_at.parse::<u128>().unwrap_or_default())
+        .map(|client| client.last_seen_at.clone());
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), SDK_INGESTION_PORT);
+    let ingestion_reachable = TcpStream::connect_timeout(&address, Duration::from_millis(120)).is_ok();
+
+    Ok(SdkSetupInfo {
         port: SDK_INGESTION_PORT,
         ios_base_url: format!("http://127.0.0.1:{SDK_INGESTION_PORT}"),
         android_base_url: format!("http://10.0.2.2:{SDK_INGESTION_PORT}"),
         event_path: SDK_EVENT_PATH.into(),
         health_path: SDK_HEALTH_PATH.into(),
         correlation_header: SDK_CORRELATION_HEADER.into(),
-    }
+        ingestion_reachable,
+        active_client_count,
+        known_client_count: clients.len(),
+        latest_seen_at,
+    })
 }
 
 #[tauri::command]
@@ -164,13 +191,14 @@ pub fn sdk_enrichment_for_flow(
         .map_err(sdk_storage_error)?
         .flatten();
 
-    if let (Some(session_id), Some(client)) = (detail.summary.session_id.as_deref(), client.as_ref()) {
-        let _ = state.database.attribute_session_from_request_header(
-            SDK_CORRELATION_HEADER,
-            request_id_value,
-            &client.app_id,
-        );
-        let _ = session_id;
+    if detail.summary.session_id.is_some() {
+        if let Some(client) = client.as_ref() {
+            let _ = state.database.attribute_session_from_request_header(
+                SDK_CORRELATION_HEADER,
+                request_id_value,
+                &client.app_id,
+            );
+        }
     }
 
     let around_ms = detail.summary.started_at.parse::<u128>().unwrap_or_default();
