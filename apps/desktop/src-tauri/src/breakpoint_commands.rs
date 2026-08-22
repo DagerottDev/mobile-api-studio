@@ -1,7 +1,11 @@
 use super::AppState;
 use core_model::AppError;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tauri::State;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,7 +49,7 @@ pub struct PendingBreakpoint {
     pub status_code: Option<u16>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BreakpointDecisionAction {
     Continue,
@@ -159,16 +163,41 @@ pub fn resolve_breakpoint(
 #[tauri::command]
 pub fn clear_stale_breakpoints(state: State<'_, AppState>) -> Result<usize, AppError> {
     let mut removed = 0usize;
-    for directory in [pending_directory(&state), decision_directory(&state)] {
-        if !directory.is_dir() {
-            continue;
-        }
-        for entry in fs::read_dir(&directory).map_err(io_error)? {
+    let now = epoch_millis();
+    let pending_dir = pending_directory(&state);
+    if pending_dir.is_dir() {
+        for entry in fs::read_dir(&pending_dir).map_err(io_error)? {
             let entry = entry.map_err(io_error)?;
-            if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
                 continue;
             }
-            if fs::remove_file(entry.path()).is_ok() {
+            let expired = fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<PendingBreakpoint>(&bytes).ok())
+                .and_then(|pending| pending.deadline_at.parse::<u128>().ok())
+                .is_some_and(|deadline| deadline <= now);
+            if expired && fs::remove_file(path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+
+    let decision_dir = decision_directory(&state);
+    if decision_dir.is_dir() {
+        for entry in fs::read_dir(&decision_dir).map_err(io_error)? {
+            let entry = entry.map_err(io_error)?;
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let stale = entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+                .is_some_and(|age| age > Duration::from_secs(120));
+            if stale && fs::remove_file(path).is_ok() {
                 removed += 1;
             }
         }
@@ -196,6 +225,13 @@ fn safe_id(value: &str) -> String {
         .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
         .take(160)
         .collect()
+}
+
+fn epoch_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
 }
 
 fn io_error(error: std::io::Error) -> AppError {
