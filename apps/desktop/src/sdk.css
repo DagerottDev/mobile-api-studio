@@ -7,6 +7,12 @@
   overflow: hidden;
 }
 
+.sdk-health-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .sdk-setup-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -41,6 +47,7 @@
 }
 
 .sdk-note { padding: 0 14px 14px; margin: 0; }
+.sdk-note code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
 
 .sdk-session-strip {
   border-top: 1px solid var(--border, #303744);
