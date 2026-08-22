@@ -57,24 +57,23 @@ export function SdkView() {
   }, [selectedId]);
 
   const selected = useMemo(() => clients.find((client) => client.clientId === selectedId) ?? null, [clients, selectedId]);
-  const activeCount = clients.filter(isRecentlyActive).length;
   const attributedSessions = sessions.filter((session) => Boolean(session.appId)).slice(0, 8);
 
   return (
     <div className="sdk-page-stack">
       <section className="panel sdk-overview">
         <div className="panel-heading">
-          <div><strong>App-aware SDK</strong><span>{activeCount} active · {clients.length} known clients</span></div>
-          <button className="secondary compact" onClick={() => void refresh()}>Refresh</button>
+          <div><strong>App-aware SDK</strong><span>{setup?.activeClientCount ?? 0} active · {setup?.knownClientCount ?? clients.length} known clients</span></div>
+          <div className="sdk-health-heading"><span className={setup?.ingestionReachable ? "sdk-status-pill active" : "sdk-status-pill"}>{setup?.ingestionReachable ? "ingestion online" : "ingestion unavailable"}</span><button className="secondary compact" onClick={() => void refresh()}>Refresh</button></div>
         </div>
         {error ? <div className="error-banner">{error}</div> : null}
         {setup ? <div className="sdk-setup-grid">
           <div><span>iOS Simulator</span><strong>{setup.iosBaseUrl}</strong></div>
           <div><span>Android Emulator</span><strong>{setup.androidBaseUrl}</strong></div>
           <div><span>Event endpoint</span><strong>{setup.eventPath}</strong></div>
-          <div><span>Correlation</span><strong>{setup.correlationHeader}</strong></div>
+          <div><span>Last SDK activity</span><strong>{setup.latestSeenAt ? formatTimestamp(setup.latestSeenAt) : "No handshake yet"}</strong></div>
         </div> : null}
-        <p className="muted-copy sdk-note">SDK telemetry stays local. The correlation header is captured by Mobile API Studio and removed by the proxy before the real backend receives the request.</p>
+        <p className="muted-copy sdk-note">SDK telemetry stays local. The correlation header <code>{setup?.correlationHeader ?? "X-Mobile-API-Studio-Request-Id"}</code> is captured locally and removed by the proxy before the real backend receives the request.</p>
         {attributedSessions.length > 0 ? <div className="sdk-session-strip">
           <strong>Attributed sessions</strong>
           <div>{attributedSessions.map((session) => <span key={session.id}><b>{session.name}</b><small>{session.appId} · {session.deviceId ?? "unknown device"}</small></span>)}</div>
