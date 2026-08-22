@@ -1,341 +1,389 @@
 # Architecture
 
+> **As-built status:** this document reflects the implementation merged through v0.5. Formal validation is deferred; architecture described here is implemented structure, not a claim that every path has been independently verified.
+
 ## 1. System overview
 
 ```text
-                 ┌───────────────────────────────┐
-                 │      Tauri Desktop App        │
-                 │ React UI + Rust commands      │
-                 └───────────────┬───────────────┘
-                                 │
-                    ┌────────────┴─────────────┐
-                    │        Rust Core         │
-                    │ sessions / storage / UI │
-                    └──────┬─────┬─────┬──────┘
-                           │     │     │
-             ┌─────────────┘     │     └─────────────┐
-             ▼                   ▼                   ▼
-      Device Manager       Capture Engine       Replay Engine
-      iOS / Android        abstraction          HTTP client
-             │                   │
-       simctl / adb        initial adapter
-                                 │
-                            mitmdump sidecar
-                                 │
-                          normalized events
-                                 │
-                 ┌───────────────┴───────────────┐
-                 │    iOS Simulator / Android    │
-                 │          Emulator             │
-                 └───────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                    Tauri Desktop App                         │
+│            React UI + task-oriented Rust commands            │
+└──────────────────────────────┬───────────────────────────────┘
+                               │
+                  ┌────────────┴────────────┐
+                  │     Rust application    │
+                  │ orchestration + state  │
+                  └─┬─────┬─────┬─────┬────┘
+                    │     │     │     │
+        ┌───────────┘     │     │     └──────────────┐
+        ▼                 ▼     ▼                    ▼
+ Device adapters      Capture  Storage          Replay/Mocks
+ simctl / ADB         engine   SQLite+bodies    Compare / AI
+        │                 │
+        │             mitmdump
+        │                 │
+        └──────────┬──────┘
+                   ▼
+        iOS Simulator / Android Emulator
+
+Optional app-aware path:
+
+iOS Swift SDK / Android Kotlin SDK
+        -> local SDK ingestion
+        -> persisted SDK events
+        -> request correlation
+        -> Traffic / Compare enrichment
+
+Optional external AI path:
+
+local deterministic evidence
+        -> redaction + limits
+        -> exact preview + fingerprint
+        -> explicit user send
+        -> provider adapter
+        -> local AI result history
 ```
 
 ## 2. Architectural boundaries
 
-### UI layer
+### React UI
 
-Owns rendering and transient interaction state only.
+Owns rendering and transient interaction state.
 
-The UI should not:
+It does not directly:
 
-- execute ADB/simctl directly;
-- manage CA files;
-- spawn the capture process;
-- write SQLite directly;
-- hold raw secret values longer than necessary.
+- execute ADB or `simctl`;
+- spawn/stop mitmdump;
+- write SQLite;
+- manage certificate files;
+- access Keychain secrets;
+- call external AI providers directly.
 
-### Application/core layer
+### Tauri/application layer
 
-Owns workflows:
+Owns user workflows and bridges UI to focused Rust crates:
 
 - connect/disconnect;
-- session lifecycle;
-- flow queries;
-- replay;
-- mock management;
-- export;
-- comparison.
+- capture/session lifecycle;
+- flow inspection/search;
+- Replay;
+- collections/environments;
+- mocks/fixtures/breakpoints;
+- SDK status/enrichment;
+- comparison/diagnostics;
+- AI preview/send/history;
+- import/export and settings.
 
-### Adapter layer
+### Adapter/domain crates
 
-Wraps external/system dependencies:
+External dependencies and deterministic logic are kept outside UI code so the implementation can evolve independently.
 
-- ADB
-- `simctl`
-- macOS proxy/system configuration
-- mitmdump
-- OS keychain/credential store
-
-Each adapter returns typed capabilities and errors.
+---
 
 ## 3. Rust crate responsibilities
 
 ### `core-model`
 
-Pure types and validation. No platform-specific imports.
+Shared capture/workspace domain types, normalization, application errors, and serialization contracts.
 
 ### `capture-core`
 
-Interfaces, capture event normalization, lifecycle state machine.
+`CaptureEngine` interface and capture lifecycle/event contracts.
 
 ### `capture-mitm`
 
-- find/launch managed mitmdump;
-- version compatibility checks;
-- decode sidecar events;
-- heartbeat;
-- graceful shutdown;
-- translate sidecar failures into core errors.
+- launch/manage mitmdump;
+- read normalized sidecar events;
+- expose capture lifecycle through `CaptureEngine`;
+- isolate mitmproxy-specific behavior from the rest of the app.
 
 ### `device-ios`
 
-- detect Xcode tools;
-- list booted simulators;
-- CA installation;
-- app/runtime metadata;
-- capability checks.
+- detect `xcrun`/simctl availability;
+- discover booted Simulators;
+- install the development capture root CA;
+- expose iOS capability/error information.
 
 ### `device-android`
 
-- find ADB;
-- list emulators;
+- discover ADB emulators;
 - read runtime metadata;
-- proxy strategy;
-- clear/rollback;
-- certificate diagnostics.
+- read/apply/clear emulator proxy state;
+- expose Android capability/error information.
 
 ### `storage`
 
 - SQLite migrations;
-- session/flow repositories;
-- body store;
-- retention;
-- full-text/search helper later.
+- capture-session/flow/detail persistence;
+- workspace sessions/search/collections/environments/preferences;
+- content-addressed body-store integration.
+
+### `workspace-core`
+
+Reusable workspace logic such as interpolation, export/diagnostic data structures, and endpoint/workspace helpers.
+
+### `secret-store`
+
+OS credential-store abstraction. The current macOS implementation uses Keychain. Secret values are not persisted in normal SQLite fields.
 
 ### `replay`
 
-- draft validation;
-- environment interpolation;
-- secret resolution;
-- async HTTP execution;
-- replay result normalization.
+Native async HTTP execution for editable Replay drafts. Replay does not depend on the browser/webview and therefore is not subject to browser CORS behavior.
 
-### `mock-engine`
+### `mock-core`
 
-Introduced in v0.3. Rule matching remains deterministic and independent of UI.
+Deterministic mock rule model and actions.
 
-### `diff-engine`
+### `mock-storage`
 
-Introduced in v0.5. JSON/header/session matching and drift analysis.
+Persistent mock rule storage in the application database.
+
+### `mock-fixtures`
+
+Reusable response-fixture persistence.
+
+### `sdk-protocol`
+
+Versioned platform-neutral handshake/context/log/network event model and the internal request-correlation header contract.
+
+### `sdk-transport`
+
+Local SDK ingestion transport. The desktop binds SDK telemetry to host loopback; iOS Simulator uses `127.0.0.1`, while Android Emulator reaches the host through `10.0.2.2`.
+
+### `sdk-storage`
+
+SDK client registry plus app/context/log/network-event persistence.
+
+### `compare-core`
+
+Deterministic session comparison:
+
+- endpoint normalization/matching;
+- repeated-call alignment;
+- request/response diffs;
+- JSON shape/type drift;
+- timing/size deltas;
+- missing/extra calls;
+- duplicate/retry, slow-call, error-cluster, and waterfall diagnostics.
+
+### `ai-core`
+
+- provider-neutral AI interface;
+- OpenAI Responses implementation;
+- deterministic redaction;
+- bounded context construction;
+- context fingerprinting.
+
+### `ai-storage`
+
+Local AI result history keyed by target/task/provider/model/context fingerprint.
+
+---
 
 ## 4. Capture data path
 
 ```text
-network request
-  -> proxy engine
-  -> addon flow callback
-  -> normalized event
-  -> capture-mitm decoder
-  -> core flow accumulator
-  -> storage writer
-  -> summary Tauri event
-  -> React timeline
+mobile request
+  -> runtime proxy route
+  -> mitmproxy addon
+  -> normalized sidecar event
+  -> capture-mitm
+  -> Tauri ingestion
+  -> SQLite metadata + body store
+  -> Traffic queries
+  -> React timeline / Inspector
 ```
 
-Request/response bodies should not be copied repeatedly across every layer.
+Bodies are not repeatedly copied through every layer. Large content is stored by SHA-256 and fetched on demand.
 
-Preferred approach:
+## 5. Sidecar responsibilities
 
-- small bodies: inline up to a low threshold;
-- large bodies: temporary file/body store reference;
-- UI fetches body on demand.
+The mitmproxy addon currently handles more than capture framing because Phase 3 deliberately places live request/response mutation at the proxy seam.
 
-## 5. Sidecar protocol
+Responsibilities include:
 
-Use a versioned protocol from the first commit.
+- normalized request/response capture events;
+- mock-rule hot reload from a local rule document;
+- mock response/status/header/body/latency/drop actions;
+- request and response breakpoint pending/decision envelopes;
+- correlation-ID extraction and stripping before upstream delivery;
+- typed diagnostics when sidecar-side processing fails.
 
-Envelope:
+The desktop remains the source of truth for user-facing rules/state; the sidecar consumes published local state.
 
-```json
-{
-  "schema_version": 1,
-  "event_id": "uuid",
-  "event_type": "flow.response.complete",
-  "timestamp": "2026-08-22T10:00:00Z",
-  "payload": {}
-}
-```
+## 6. Connection and rollback model
 
-Rules:
+Connection is treated as a transaction.
 
-- one JSON object per frame;
-- unknown fields ignored;
-- unknown event types logged, not fatal;
-- sidecar sends startup capability event;
-- protocol version mismatch blocks connection with a clear message.
-
-For v0.1 JSONL is acceptable. If event volume becomes a bottleneck, move to a local domain socket/MessagePack without changing domain models.
-
-## 6. Device strategy abstraction
+Conceptually:
 
 ```text
-DeviceProvider
-  list_devices()
-  get_capabilities(device)
-  prepare(device, capture_endpoint)
-  verify(device)
-  rollback(device)
+validate prerequisites
+ -> start capture engine
+ -> prepare CA
+ -> configure selected runtime
+ -> persist active capture session
+ -> capture traffic
 ```
 
-A `prepare` call returns both status and reversible mutations.
+A rollback journal records device mutations that must survive an abnormal application exit.
 
-### Why capability-based?
+Current platform behavior:
 
-Mobile networking differs by:
+- **Android Emulator:** reads the prior global proxy, applies the Mobile API Studio proxy, and restores the previous value on disconnect/recovery.
+- **iOS Simulator:** installs the local capture CA through `simctl`; proxy routing remains guided/manual rather than silently mutating broad macOS proxy configuration.
 
-- OS version;
-- emulator image;
-- rootability;
-- app networking stack;
-- CA trust rules;
-- proxy awareness;
-- corporate/VPN software.
+## 7. Storage architecture
 
-Hard-coded “Android always does X” or “Simulator always does Y” logic will fail quickly.
-
-## 7. Connection transaction
-
-Treat connection as a transaction:
-
-```text
-begin
-  validate prerequisites
-  snapshot mutable settings
-  start capture engine
-  ensure CA
-  configure routing/proxy
-  verify traffic
-commit connection
-```
-
-On any failure:
-
-```text
-rollback mutations in reverse order
-stop engine
-report typed diagnostic
-```
-
-Persist a minimal recovery record before mutating system settings. Remove it after successful rollback.
-
-## 8. Storage architecture
-
-SQLite is the source of truth for metadata.
-
-Large body files should be addressed by SHA-256 so identical bodies can share storage later.
-
-Potential file layout:
+SQLite stores structured metadata. Bodies are stored outside SQLite in a content-addressed tree such as:
 
 ```text
 bodies/ab/cd/<sha256>.body
 ```
 
-Retention controls:
+Major persisted domains include:
 
-- max total disk use;
-- max age;
-- pinned sessions excluded from cleanup;
-- explicit “delete bodies but keep metadata” future option.
+- sessions and flows;
+- headers/details/body references;
+- normalized endpoint index;
+- saved collections/requests;
+- environments and preferences;
+- mock rules/fixtures;
+- SDK clients/events;
+- AI result history.
 
-## 9. Query API to frontend
+Secret environment variables and the AI API key use the OS credential store rather than normal database values.
 
-Commands should be task-oriented:
+## 8. Replay architecture
 
-```text
-list_devices
-connect_device
-disconnect
-list_sessions
-query_flows
-get_flow_detail
-get_body_preview
-create_replay_draft
-execute_replay
-copy_curl
-```
-
-Avoid exposing raw SQL-like APIs to the frontend.
-
-## 10. Frontend state
-
-Recommended split:
-
-- persisted server-like state queried from Rust: sessions, flows, details;
-- transient UI state: selected flow, active tabs, draft filters, panel sizes.
-
-Do not mirror the entire SQLite database into a global JavaScript store.
-
-## 11. Secrets architecture
-
-Three classes of data:
-
-### Normal
-
-Host, path, status, duration.
-
-### Potentially sensitive
-
-Request/response body and headers.
-
-### Explicit secrets
-
-Authorization tokens, cookies, API keys, environment secrets.
-
-Default API to frontend returns redacted secret values. Revealing a value is an explicit operation.
-
-Environment secret variables should be stored using OS secure credential storage.
-
-## 12. Plugin/extensibility direction
-
-Do not create a plugin marketplace early. Instead define internal extension points:
+Replay is intentionally detached from mitmproxy.
 
 ```text
-CaptureEngine
-DeviceProvider
-BodyRenderer
-ProtocolDecoder
-ExportFormatter
-AIProvider
+captured/saved request
+ -> editable Replay draft
+ -> environment interpolation
+ -> protected internal-header removal
+ -> native Rust HTTP execution
+ -> replay response
+ -> persisted flow with source = replay
 ```
 
-Only stabilize a public plugin API after v0.5 usage shows which interfaces are genuinely reusable.
+This lets Replay work as an API-development surface even when no capture session is active.
 
-## 13. Protocol roadmap
+## 9. Mock and breakpoint architecture
 
-### v0.1
+```text
+Desktop rule/fixture state
+ -> SQLite
+ -> atomic mock-rules.json publish
+ -> mitmproxy hot reload
+ -> request/response mutation
+ -> captured result tagged source = mock
+```
 
-- HTTP/1
-- HTTPS
-- HTTP/2 as supported by capture engine
+Breakpoints use local file-backed envelopes under the isolated mitmproxy data directory:
 
-### v0.2+
+```text
+breakpoints/pending
+breakpoints/decisions
+```
 
-- WebSocket inspector
+A breakpoint has a bounded auto-continue timeout so unresolved UI state does not indefinitely deadlock emulator traffic.
 
-### Later
+## 10. App-aware SDK architecture
 
-- GraphQL conveniences are UI/schema features on top of HTTP.
-- gRPC requires deliberate HTTP/2 + protobuf tooling and should be a separate milestone.
-- HTTP/3/QUIC should not block the initial product.
+SDK enrichment is optional and does not replace proxy capture.
 
-## 14. Platform roadmap
+### Correlation
 
-### macOS first
+Instrumented requests receive an internal development request ID:
 
-Required because iOS Simulator development requires macOS/Xcode.
+```text
+X-Mobile-API-Studio-Request-Id
+```
 
-### Windows/Linux later
+The SDK sends its network/context event locally. The proxy captures the request ID for local joining and removes the header before forwarding to the real backend.
 
-Android-only workflows can become cross-platform once the core product is stable. Tauri and the capture abstraction make this feasible.
+The internal header is also omitted from normal cURL export, Replay, and AI context.
 
-Do not force cross-platform packaging into v0.1 if it slows the iOS+Android macOS workflow.
+### SDK telemetry boundary
+
+- iOS SDK telemetry uses an ephemeral URLSession configured not to use the app capture instrumentation/proxy path.
+- Android SDK telemetry uses a direct local transport path rather than the intercepted OkHttp client.
+- disabled SDK configuration leaves app requests unmodified.
+
+## 11. Comparison architecture
+
+Comparison builds a local `SessionSnapshot` for baseline and candidate sessions and sends those snapshots to `compare-core`.
+
+Matching is deterministic:
+
+```text
+normalized endpoint
+ + method
+ + occurrence order within endpoint
+```
+
+The output is structured evidence, including presence, field differences, JSON shape drift, timing/size changes, SDK context differences, and per-session diagnostics.
+
+No AI call is required to compute comparison results.
+
+## 12. AI architecture
+
+The AI path starts **after** local deterministic evidence exists.
+
+```text
+selected comparison/flow
+ -> deterministic JSON evidence
+ -> redact headers/query/body secret keys
+ -> omit internal correlation metadata
+ -> cap strings/body/context
+ -> generate exact preview
+ -> SHA-256 fingerprint
+ -> explicit user send
+ -> recompute + fingerprint check
+ -> AIProvider
+ -> local result history
+```
+
+The current provider is OpenAI through the Responses API with `store: false`.
+
+Provider API keys are read from the OS secure store only when needed and are not copied into SQLite or workspace exports.
+
+## 13. Frontend information architecture
+
+Current top-level workspaces:
+
+```text
+Connect
+Traffic
+Replay
+Mocks
+SDK
+Compare
+AI
+Workspace
+Settings
+```
+
+The UI queries task-oriented Tauri commands; it does not mirror the whole database into a single JavaScript state store.
+
+## 14. Platform scope
+
+### Implemented target
+
+- macOS desktop host;
+- iOS Simulator;
+- Android Emulator.
+
+### Deferred
+
+- physical mobile devices;
+- Windows/Linux desktop builds;
+- cloud/team synchronization;
+- gRPC/HTTP3-specific tooling;
+- public plugin marketplace.
+
+## 15. Validation status
+
+Architecture and product code through Phase 5 are implemented, but formal validation is intentionally outside the phase gates. See [FINAL_VALIDATION.md](FINAL_VALIDATION.md) for the owner-led validation stage.

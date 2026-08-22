@@ -1,150 +1,122 @@
 # Roadmap and Phase Gates
 
-The roadmap is feature-gated, not date-gated. Formal testing/validation is intentionally deferred until after implementation Phases 0–5, per `AGENTS.md`; the checkboxes below track implementation status only.
+> **Overall status:** implementation Phases 0–5 are complete and merged to `main`. The roadmap is now an implementation record. Formal testing/CI/benchmarking/final validation were intentionally not used as phase gates and remain owner-led follow-up work.
 
-## Phase 0 — Foundation
+## Phase 0 — Foundation — ✅ merged
 
-**Goal:** prove the internal pipeline.
+**Outcome:** prove the internal desktop/Rust/storage/capture pipeline.
 
-### Work
+Implemented:
 
 - [x] Tauri 2 + React + TypeScript shell
 - [x] Cargo/pnpm workspace
 - [x] core model crate
 - [x] SQLite migrations
-- [x] body storage abstraction
-- [x] local fixture/fake capture foundations
-- [x] fake capture event generator
-- [ ] CI — deferred by project rule
+- [x] content-addressed body storage
+- [x] fake/local capture event path
+- [x] `CaptureEngine` abstraction
+- [ ] CI/test suite — deferred by project rule
 
-### Implementation status
+## Phase 1 — v0.1 Capture / Inspect / Replay — ✅ merged
 
-Implemented and merged to `main`. Formal verification is deferred.
+Implemented:
 
----
-
-## Phase 1 — v0.1 Capture / Inspect / Replay
-
-### Device
+### Device and connection
 
 - [x] iOS Simulator discovery
 - [x] Android Emulator discovery
-- [x] platform capability probe
-- [x] connection coordinator + rollback
+- [x] platform capability/error handling
+- [x] connection coordinator + rollback journal
+- [x] CA/proxy connection strategies
+- [x] typed connection diagnostics
 
-### Capture
+### Capture and UI
 
-- [x] CaptureEngine trait
-- [x] mitmdump adapter
-- [x] CA lifecycle
-- [x] iOS connection strategy
-- [x] Android connection strategy
-- [x] connection diagnostics
-
-### UI
-
-- [x] traffic timeline
-- [x] request/response inspector
+- [x] mitmdump adapter/sidecar bridge
+- [x] persistent Traffic timeline
+- [x] request/response Inspector
 - [x] body rendering foundations
-- [x] host/method/status filters
+- [x] host/method/status filtering
 
 ### Productivity
 
-- [x] safe cURL export
-- [x] replay draft
-- [x] replay execution
-- [x] replay result stored in session
+- [x] safe redacted cURL export
+- [x] Replay draft/editor
+- [x] native Rust replay execution
+- [x] replay result persistence
 
-### Implementation status
+## Phase 2 — v0.2 Daily Debugger — ✅ merged
 
-Implemented and merged to `main`. Formal verification is deferred.
-
----
-
-## Phase 2 — v0.2 Daily Debugger
+Implemented:
 
 - [x] persistent named sessions
-- [x] advanced filters/search
+- [x] cross-session search/filtering
 - [x] endpoint normalization
 - [x] saved request collections
 - [x] environment variables
 - [x] OS-secure secret variables
-- [x] export/import
+- [x] versioned export/import
 - [x] Connection Doctor
-- [x] managed/custom capture sidecar path
-- [x] better setup onboarding
+- [x] setup/onboarding state
+- [x] configurable/managed capture executable path
 
-### Implementation status
+## Phase 3 — v0.3 Mocking — ✅ merged in PR #11
 
-Implemented and merged to `main`. Formal verification is deferred.
+Implemented:
 
----
-
-## Phase 3 — v0.3 Mocking
-
-- [x] mock rule engine
+- [x] persistent mock-rule engine
 - [x] create mock from captured flow
-- [x] status override
-- [x] response body override
+- [x] status/header/body/JSON overrides
+- [x] response mutation
 - [x] latency
 - [x] timeout/drop
-- [x] response mutation
-- [x] request/response breakpoint
-- [x] fixtures
-- [x] “disable all mocks” safety action
+- [x] reusable fixtures
+- [x] request breakpoint
+- [x] response breakpoint
+- [x] bounded breakpoint timeout/cancel handling
+- [x] mocked-flow classification
+- [x] “Disable all mocks” safety action
 
-### Implementation status
-
-Implemented and merged to `main` in PR #11. Formal verification is deferred.
-
----
-
-## Phase 4 — v0.4 App-Aware SDK
+## Phase 4 — v0.4 App-Aware SDK — ✅ merged in PR #13
 
 ### iOS
 
 - [x] Swift Package
-- [x] URLSession integration
-- [x] manual/custom client instrumentation API
+- [x] URLSession/`URLProtocol` integration
+- [x] manual/custom-client instrumentation
 - [x] context/log events
 - [x] source metadata helpers
-- [x] debug-first/no-op release behavior
-- [x] sample app
+- [x] disabled/no-op behavior until explicitly enabled
+- [x] sample iOS app
 
 ### Android
 
 - [x] Kotlin core
 - [x] OkHttp interceptor
-- [x] manual/custom client instrumentation API
+- [x] manual/custom-client instrumentation
 - [x] context/log events
 - [x] source metadata helpers
-- [x] no-op release strategy
-- [x] sample app
+- [x] disabled/pass-through behavior
+- [x] sample Android app
 
 ### Desktop
 
-- [x] versioned local SDK transport
+- [x] versioned local SDK protocol/transport
 - [x] app/device handshake and client registry
 - [x] SDK event persistence
-- [x] proxy↔SDK correlation
-- [x] local-only correlation-header stripping
+- [x] proxy↔SDK request correlation
+- [x] correlation-header stripping before upstream delivery
 - [x] session app attribution
-- [x] SDK health/connection diagnostics
-- [x] source/screen/feature/log metadata UI
-- [x] app-context flow search
+- [x] SDK health/status workspace
+- [x] Traffic/Inspector app context and logs
+- [x] app-context search/filtering
 
-### Implementation status
+## Phase 5 — v0.5 Compare + AI — ✅ merged in PR #15
 
-Implemented and merged to `main` in PR #13. Formal verification is deferred.
-
----
-
-## Phase 5 — v0.5 Compare + AI
-
-### Diff
+### Deterministic comparison
 
 - [x] session pairing
-- [x] endpoint matching
+- [x] endpoint normalization/matching
 - [x] repeated-call alignment
 - [x] request method/query/header/body diff
 - [x] response status/header/body diff
@@ -156,65 +128,69 @@ Implemented and merged to `main` in PR #13. Formal verification is deferred.
 ### Deterministic diagnostics
 
 - [x] duplicate/retry detection
-- [x] slowest requests
-- [x] waterfall overlap/sequential groups
+- [x] slowest-request ranking
 - [x] error clustering
+- [x] waterfall overlap/sequential groups
 - [x] evidence-count comparison summary
 
-### Desktop
+### Desktop Compare UI
 
 - [x] Compare workspace route
-- [x] baseline/candidate selectors
-- [x] endpoint and occurrence drill-down
-- [x] request/response/timing diff inspector
+- [x] baseline/candidate session selector
+- [x] endpoint + occurrence drill-down
+- [x] request/response/timing inspector
 - [x] missing/extra/drift indicators
 - [x] deterministic diagnostics panel
 - [x] SDK context difference display
 
-### AI
+### Optional AI
 
 - [x] provider-neutral interface
 - [x] OpenAI Responses API provider
 - [x] BYOK OS-secure storage
-- [x] provider/model/settings UI
+- [x] provider/model/redaction settings
 - [x] deterministic redaction pipeline
-- [x] exact external-context preview + SHA-256 fingerprint gate
+- [x] exact external-context preview
+- [x] SHA-256 fingerprint gate between preview and send
 - [x] session-diff explanation
 - [x] selected-flow diagnosis
-- [x] local AI result history with provider/model/context fingerprint
-- [x] optional AI path that never blocks deterministic comparison
-
-### Privacy
-
-- [x] sensitive header redaction
-- [x] internal correlation-header omission
-- [x] configurable JSON/query secret-key redaction
-- [x] body/string/context limits
-- [x] explicit user send action after preview
+- [x] local AI history with provider/model/context fingerprint
 - [x] OpenAI `store: false`
-
-### Implementation status
-
-Implemented and merged to `main` in PR #15. Formal verification is deferred.
-
-### Exit outcome
-
-A developer can explain a meaningful iOS/Android mismatch using deterministic diffing, with AI as an optional enhancement.
+- [x] AI remains optional and never blocks local deterministic comparison
 
 ---
 
-# Deferred backlog
+# Current stage — Owner-led final validation
 
-Intentionally not scheduled before v0.5:
+The product implementation plan is finished. The next stage is deliberately separate from the phase gates.
+
+Validation is owned independently by the repository owner and may include whichever manual/automated approach they choose later.
+
+Documentation for that stage: [FINAL_VALIDATION.md](FINAL_VALIDATION.md).
+
+The repository does **not** currently claim:
+
+- a passing automated test suite;
+- CI certification;
+- benchmark certification;
+- compatibility across every Xcode/iOS/Android runtime;
+- release/security audit completion.
+
+Defects found during validation should become focused validation/fix issues rather than reopening completed implementation phases.
+
+---
+
+# Deferred post-v0.5 product scope
+
+Intentionally not part of the completed v0.5 roadmap:
 
 - physical iOS/Android devices
 - Windows/Linux desktop builds
 - team/cloud synchronization
 - gRPC inspector
 - HTTP/3-specific tooling
-- OpenAPI generation/import depth
-- test generation
-- CI/headless mode
+- deeper OpenAPI workflows
 - plugin marketplace
 - production APM integration
-- traffic sharing service
+- hosted traffic sharing
+- public release/update infrastructure
