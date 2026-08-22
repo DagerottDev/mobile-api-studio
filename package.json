@@ -1,0 +1,11 @@
+{
+  "name": "mobile-api-studio",
+  "private": true,
+  "packageManager": "pnpm@10.15.0",
+  "scripts": {
+    "dev": "pnpm --filter @mobile-api-studio/desktop dev",
+    "build": "pnpm --filter @mobile-api-studio/desktop build",
+    "typecheck": "pnpm --filter @mobile-api-studio/desktop typecheck",
+    "tauri": "pnpm --filter @mobile-api-studio/desktop tauri"
+  }
+}
