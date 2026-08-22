@@ -17,7 +17,15 @@ public enum MobileAPIStudio {
 
     private static let state = MobileAPIStudioState()
 
+    internal static var isEnabled: Bool { state.isEnabled }
+
     public static func configure(_ configuration: MobileAPIStudioConfiguration = .init()) {
+        state.configure(configuration)
+    }
+
+    public static func disable() {
+        var configuration = MobileAPIStudioConfiguration()
+        configuration.enabled = false
         state.configure(configuration)
     }
 
@@ -148,6 +156,7 @@ private final class MobileAPIStudioState: @unchecked Sendable {
             self.configuration = configuration
             guard configuration.enabled else {
                 transport = nil
+                clientID = nil
                 inFlight.removeAll()
                 return
             }
