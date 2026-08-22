@@ -3,11 +3,12 @@ import { useCallback, useEffect, useState } from "react";
 import { ConnectView } from "./components/ConnectView";
 import { ReplayView } from "./components/ReplayView";
 import { TrafficView } from "./components/TrafficView";
+import { WorkspaceView } from "./components/WorkspaceView";
 import type { CaptureSession } from "./types";
 
-type Route = "Connect" | "Traffic" | "Replay" | "Settings";
+type Route = "Connect" | "Traffic" | "Replay" | "Workspace" | "Settings";
 
-const routes: Route[] = ["Connect", "Traffic", "Replay", "Settings"];
+const routes: Route[] = ["Connect", "Traffic", "Replay", "Workspace", "Settings"];
 
 function App() {
   const [route, setRoute] = useState<Route>("Connect");
@@ -57,7 +58,7 @@ function App() {
 
         <div className="sidebar-metric">
           <span>Sessions</span>
-          <strong>{sessions.length}</strong>
+          <strong>{sessions.filter((session) => session.status !== "archived").length}</strong>
         </div>
 
         <div className="core-status">
@@ -74,10 +75,12 @@ function App() {
               {route === "Connect"
                 ? "Discover and connect local mobile runtimes"
                 : route === "Traffic"
-                  ? "Inspect captured mobile API traffic"
+                  ? "Search and inspect traffic across capture sessions"
                   : route === "Replay"
                     ? "Edit and resend captured requests"
-                    : "Mobile API Studio"}
+                    : route === "Workspace"
+                      ? "Manage sessions, saved requests, and environments"
+                      : "Mobile API Studio preferences and diagnostics"}
             </p>
           </div>
         </header>
@@ -85,14 +88,15 @@ function App() {
         {route === "Connect" ? <ConnectView /> : null}
         {route === "Traffic" ? <TrafficView /> : null}
         {route === "Replay" ? <ReplayView /> : null}
+        {route === "Workspace" ? <WorkspaceView /> : null}
 
         {route === "Settings" ? (
           <section className="placeholder panel">
             <span className="eyebrow">Settings</span>
-            <h2>Settings expands in Phase 2.</h2>
+            <h2>Connection Doctor and onboarding are the next Phase 2 slice.</h2>
             <p>
-              Phase 1 focuses on the complete capture, inspect, and replay workflow. Environment,
-              collection, filtering, and connection-preference management are part of the next phase.
+              The reusable workspace is now available for sessions, collections, environments, and
+              Keychain-backed secrets. Settings will surface prerequisite diagnostics and guided setup.
             </p>
           </section>
         ) : null}
