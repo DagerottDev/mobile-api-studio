@@ -21,29 +21,42 @@ function App() {
     setSelectedFlowId((current) => current ?? result[0]?.id ?? null);
   }, []);
 
+  const refreshSessions = useCallback(async () => {
+    setSessions(await invoke<CaptureSession[]>("list_sessions"));
+  }, []);
+
   useEffect(() => {
     invoke<string>("health")
       .then(setHealth)
       .catch((error) => setHealth(`Rust unavailable: ${String(error)}`));
 
-    Promise.all([
-      refreshFlows(),
-      invoke<CaptureSession[]>("list_sessions").then(setSessions),
-    ])
+    Promise.all([refreshFlows(), refreshSessions()])
       .then(() => setLoadError(null))
       .catch((error) => setLoadError(String(error)));
-  }, [refreshFlows]);
+  }, [refreshFlows, refreshSessions]);
+
+  useEffect(() => {
+    if (route !== "Traffic") return;
+
+    const refresh = () => {
+      void Promise.all([refreshFlows(), refreshSessions()]).catch((error) =>
+        setLoadError(String(error)),
+      );
+    };
+
+    refresh();
+    const timer = window.setInterval(refresh, 1000);
+    return () => window.clearInterval(timer);
+  }, [route, refreshFlows, refreshSessions]);
 
   const selectedFlow = useMemo(
     () => flows.find((flow) => flow.id === selectedFlowId) ?? null,
     [flows, selectedFlowId],
   );
 
-  async function addDemoFlow() {
+  async function manualRefresh() {
     try {
-      const flow = await invoke<FlowSummary>("ingest_demo_flow");
-      await refreshFlows();
-      setSelectedFlowId(flow.id);
+      await Promise.all([refreshFlows(), refreshSessions()]);
       setLoadError(null);
     } catch (error) {
       setLoadError(String(error));
@@ -88,11 +101,11 @@ function App() {
         <header className="toolbar">
           <div>
             <h1>{route}</h1>
-            <p>{route === "Connect" ? "Discover local mobile runtimes" : "Mobile API Studio"}</p>
+            <p>{route === "Connect" ? "Discover and connect local mobile runtimes" : "Mobile API Studio"}</p>
           </div>
           {route === "Traffic" ? (
-            <button className="secondary" onClick={addDemoFlow}>
-              Ingest demo flow
+            <button className="secondary" onClick={() => void manualRefresh()}>
+              Refresh traffic
             </button>
           ) : null}
         </header>
@@ -104,10 +117,10 @@ function App() {
             <div className="traffic-list panel">
               <div className="panel-heading">
                 <div>
-                  <strong>Stored traffic</strong>
-                  <span>{flows.length} flows loaded from SQLite</span>
+                  <strong>Captured traffic</strong>
+                  <span>{flows.length} persisted flows · live refresh every second</span>
                 </div>
-                <span className="pill">capture event path</span>
+                <span className="pill">mitmdump → SQLite</span>
               </div>
 
               {loadError ? <div className="error-banner">{loadError}</div> : null}
@@ -148,7 +161,7 @@ function App() {
               <div className="panel-heading">
                 <div>
                   <strong>Inspector</strong>
-                  <span>normalized Flow model</span>
+                  <span>normalized captured flow</span>
                 </div>
               </div>
 
@@ -172,7 +185,7 @@ function App() {
                   <dd>{selectedFlow.startedAt}</dd>
                 </dl>
               ) : (
-                <p className="empty-state">No stored flows.</p>
+                <p className="empty-state">No captured flows yet. Start a capture from Connect.</p>
               )}
             </div>
           </section>
@@ -181,10 +194,11 @@ function App() {
         {route === "Replay" || route === "Settings" ? (
           <section className="placeholder panel">
             <span className="eyebrow">{route}</span>
-            <h2>{route} implementation follows the capture connection slice.</h2>
+            <h2>{route} implementation follows request/response detail capture.</h2>
             <p>
-              Phase 1 is currently wiring real iOS Simulator and Android Emulator
-              discovery into the desktop application before starting proxy capture.
+              The current Phase 1 slice now handles runtime discovery, connection lifecycle,
+              proxy capture and persisted flow summaries. Detailed request/response inspection
+              and replay are next.
             </p>
           </section>
         ) : null}
