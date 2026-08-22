@@ -4,6 +4,7 @@ import type {
   BreakpointBody,
   BreakpointHeader,
   MockFixture,
+  MockHeaderMutation,
   MockRule,
   PendingBreakpoint,
 } from "../mockTypes";
@@ -120,6 +121,14 @@ function FixturesPanel() {
     }
   }
 
+  function updateFixtureHeader(index: number, patch: Partial<MockHeaderMutation>) {
+    if (!draft) return;
+    setDraft({
+      ...draft,
+      responseHeaders: draft.responseHeaders.map((header, current) => current === index ? { ...header, ...patch } : header),
+    });
+  }
+
   return (
     <div className="mock-utility-grid">
       <aside className="mock-utility-list">
@@ -138,6 +147,10 @@ function FixturesPanel() {
           </div>
           <label className="field-label">Content type<input className="text-input" value={draft.responseBody?.contentType ?? ""} onChange={(event) => setDraft({ ...draft, responseBody: { contentType: event.target.value || null, encoding: draft.responseBody?.encoding ?? "text", data: draft.responseBody?.data ?? "" } })} /></label>
           <label className="field-label">Response body<textarea className="mock-body-editor" value={draft.responseBody?.data ?? ""} onChange={(event) => setDraft({ ...draft, responseBody: { contentType: draft.responseBody?.contentType ?? "application/json", encoding: draft.responseBody?.encoding ?? "text", data: event.target.value } })} spellCheck={false} /></label>
+          <div className="mock-section-heading"><div><h3>Fixture headers</h3><span>These are applied as response header mutations when the fixture is assigned.</span></div><button className="secondary compact" onClick={() => setDraft({ ...draft, responseHeaders: [...draft.responseHeaders, { name: "", value: "", remove: false }] })}>Add header</button></div>
+          <div className="mock-mutation-list">
+            {draft.responseHeaders.map((header, index) => <div className="mock-header-row" key={index}><input className="text-input" value={header.name} onChange={(event) => updateFixtureHeader(index, { name: event.target.value })} placeholder="Header" /><input className="text-input" value={header.value ?? ""} disabled={header.remove} onChange={(event) => updateFixtureHeader(index, { value: event.target.value })} placeholder="Value" /><label className="inline-toggle"><input type="checkbox" checked={header.remove} onChange={(event) => updateFixtureHeader(index, { remove: event.target.checked })} /> Remove</label><button className="icon-button" onClick={() => setDraft({ ...draft, responseHeaders: draft.responseHeaders.filter((_, current) => current !== index) })}>×</button></div>)}
+          </div>
           <div className="fixture-apply-row"><select value={selectedRuleId} onChange={(event) => setSelectedRuleId(event.target.value)}><option value="">Choose mock rule</option>{rules.map((rule) => <option key={rule.id} value={rule.id}>{rule.name}</option>)}</select><button className="secondary" onClick={() => void applyToRule()} disabled={busy || !selectedRuleId}>Apply fixture to rule</button></div>
           {draft.sourceFlowId ? <p className="muted-copy">Created from captured flow {draft.sourceFlowId}.</p> : null}
         </> : <p className="empty-state">Select a response fixture.</p>}
@@ -152,6 +165,7 @@ function BreakpointsPanel() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PendingBreakpoint | null>(null);
   const [bodyText, setBodyText] = useState("");
+  const [bodyEdited, setBodyEdited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -181,7 +195,8 @@ function BreakpointsPanel() {
   useEffect(() => {
     setDraft(selected ? structuredClone(selected) : null);
     setBodyText(selected?.body ? decodeBodyForEditor(selected.body) : "");
-  }, [selected]);
+    setBodyEdited(false);
+  }, [selected?.id]);
 
   async function toggleRuleBreakpoint(rule: MockRule, field: "requestBreakpoint" | "responseBreakpoint", enabled: boolean) {
     try {
@@ -203,7 +218,9 @@ function BreakpointsPanel() {
     if (!draft) return;
     setBusy(true);
     try {
-      const body = draft.body ? encodeBodyFromEditor(draft.body, bodyText) : null;
+      const body = action === "continue" && bodyEdited && draft.body
+        ? encodeBodyFromEditor(draft.body, bodyText)
+        : null;
       await invoke("resolve_breakpoint", {
         input: {
           id: draft.id,
@@ -211,8 +228,8 @@ function BreakpointsPanel() {
           method: draft.stage === "request" ? draft.method : null,
           url: draft.stage === "request" ? draft.url : null,
           headers: action === "continue" ? draft.headers : null,
-          body: action === "continue" ? body : null,
-          clearBody: action === "continue" && draft.body === null,
+          body,
+          clearBody: action === "continue" && bodyEdited && draft.body === null,
           statusCode: draft.stage === "response" ? draft.statusCode : null,
         },
       });
@@ -229,7 +246,7 @@ function BreakpointsPanel() {
   async function clearStale() {
     try {
       const count = await invoke<number>("clear_stale_breakpoints");
-      setMessage(`Cleared ${count} pending/decision file${count === 1 ? "" : "s"}.`);
+      setMessage(`Cleared ${count} expired breakpoint file${count === 1 ? "" : "s"}.`);
       await refresh();
     } catch (value) {
       setError(formatInvokeError(value));
@@ -239,7 +256,7 @@ function BreakpointsPanel() {
   return (
     <div className="breakpoint-workspace">
       <section className="breakpoint-rule-settings">
-        <div className="panel-heading"><div><strong>Breakpoint rules</strong><span>Pause matching flows for up to 60 seconds</span></div><button className="secondary compact" onClick={() => void clearStale()}>Clear stale</button></div>
+        <div className="panel-heading"><div><strong>Breakpoint rules</strong><span>Pause matching flows for up to 60 seconds</span></div><button className="secondary compact" onClick={() => void clearStale()}>Clear expired</button></div>
         <div className="breakpoint-rule-list">
           {rules.map((rule) => <div className="breakpoint-rule-row" key={rule.id}><div><strong>{rule.name}</strong><small>{rule.method ?? "ANY"} {rule.host ?? "*"}{rule.pathPattern}</small></div><label className="inline-toggle"><input type="checkbox" checked={rule.requestBreakpoint} onChange={(event) => void toggleRuleBreakpoint(rule, "requestBreakpoint", event.target.checked)} /> Request</label><label className="inline-toggle"><input type="checkbox" checked={rule.responseBreakpoint} onChange={(event) => void toggleRuleBreakpoint(rule, "responseBreakpoint", event.target.checked)} /> Response</label></div>)}
           {rules.length === 0 ? <p className="empty-state">Create a mock rule before enabling breakpoints.</p> : null}
@@ -264,8 +281,8 @@ function BreakpointsPanel() {
             <label className="field-label">URL<input className="text-input" value={draft.url} disabled={draft.stage !== "request"} onChange={(event) => setDraft({ ...draft, url: event.target.value })} /></label>
             <div className="mock-section-heading"><div><h3>Headers</h3><span>Edited rows replace the paused side’s headers.</span></div><button className="secondary compact" onClick={() => setDraft({ ...draft, headers: [...draft.headers, { name: "", value: "" }] })}>Add header</button></div>
             <div className="breakpoint-header-list">{draft.headers.map((header, index) => <div className="breakpoint-header-row" key={index}><input className="text-input" value={header.name} onChange={(event) => updateHeader(index, { name: event.target.value })} /><input className="text-input" value={header.value} onChange={(event) => updateHeader(index, { value: event.target.value })} /><button className="icon-button" onClick={() => setDraft({ ...draft, headers: draft.headers.filter((_, current) => current !== index) })}>×</button></div>)}</div>
-            <div className="mock-section-heading"><div><h3>Body</h3><span>{draft.body?.contentType ?? "No body"}{draft.body?.isTruncated ? " · preview truncated" : ""}</span></div>{draft.body ? <button className="secondary compact" onClick={() => { setDraft({ ...draft, body: null }); setBodyText(""); }}>Clear body</button> : <button className="secondary compact" onClick={() => { const body = emptyBody(); setDraft({ ...draft, body }); setBodyText(""); }}>Add body</button>}</div>
-            {draft.body ? <textarea className="mock-body-editor" value={bodyText} onChange={(event) => setBodyText(event.target.value)} spellCheck={false} /> : <p className="muted-copy">Continuing will send an empty body.</p>}
+            <div className="mock-section-heading"><div><h3>Body</h3><span>{draft.body?.contentType ?? "No body"}{draft.body?.isTruncated ? " · preview truncated; original is preserved until edited" : bodyEdited ? " · edited" : " · original preserved"}</span></div>{draft.body ? <button className="secondary compact" onClick={() => { setDraft({ ...draft, body: null }); setBodyText(""); setBodyEdited(true); }}>Clear body</button> : <button className="secondary compact" onClick={() => { const body = emptyBody(); setDraft({ ...draft, body }); setBodyText(""); setBodyEdited(true); }}>Add body</button>}</div>
+            {draft.body ? <textarea className="mock-body-editor" value={bodyText} onChange={(event) => { setBodyText(event.target.value); setBodyEdited(true); }} spellCheck={false} /> : <p className="muted-copy">{bodyEdited ? "Continuing will send an empty body." : "This paused side has no body."}</p>}
           </> : <p className="empty-state">Select a paused request or response.</p>}
         </div>
       </div>
