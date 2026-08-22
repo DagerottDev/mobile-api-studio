@@ -1,15 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   FlowDetail,
   FlowSummary,
   ReplayDraft,
   ReplayHeaderDraft,
+  SavedRequest,
 } from "../types";
 
-export function ReplayView() {
+interface ReplayViewProps {
+  savedRequestId?: string | null;
+}
+
+export function ReplayView({ savedRequestId = null }: ReplayViewProps) {
   const [flows, setFlows] = useState<FlowSummary[]>([]);
-  const [sourceFlowId, setSourceFlowId] = useState<string>("");
+  const [savedRequests, setSavedRequests] = useState<SavedRequest[]>([]);
+  const [sourceId, setSourceId] = useState<string>("");
   const [draft, setDraft] = useState<ReplayDraft | null>(null);
   const [bodyEdited, setBodyEdited] = useState(false);
   const [sending, setSending] = useState(false);
@@ -18,23 +24,39 @@ export function ReplayView() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    invoke<FlowSummary[]>("list_flows")
-      .then((items) => {
-        setFlows(items);
-        setSourceFlowId((current) => current || items[0]?.id || "");
+    Promise.all([
+      invoke<FlowSummary[]>("list_flows"),
+      invoke<SavedRequest[]>("list_saved_requests", { collectionId: null }),
+    ])
+      .then(([flowItems, requestItems]) => {
+        setFlows(flowItems);
+        setSavedRequests(requestItems);
+        setSourceId((current) => {
+          if (savedRequestId && requestItems.some((item) => item.id === savedRequestId)) {
+            return `saved:${savedRequestId}`;
+          }
+          if (current) return current;
+          return flowItems[0]?.id ?? (requestItems[0] ? `saved:${requestItems[0].id}` : "");
+        });
       })
       .catch((value) => setError(formatInvokeError(value)));
-  }, []);
+  }, [savedRequestId]);
 
   useEffect(() => {
-    if (!sourceFlowId) {
+    if (savedRequestId && savedRequests.some((item) => item.id === savedRequestId)) {
+      setSourceId(`saved:${savedRequestId}`);
+    }
+  }, [savedRequestId, savedRequests]);
+
+  useEffect(() => {
+    if (!sourceId) {
       setDraft(null);
       return;
     }
 
     let cancelled = false;
     setLoadingDraft(true);
-    invoke<ReplayDraft>("create_replay_draft", { flowId: sourceFlowId })
+    invoke<ReplayDraft>("create_replay_draft", { flowId: sourceId })
       .then((nextDraft) => {
         if (cancelled) return;
         setDraft(nextDraft);
@@ -55,17 +77,10 @@ export function ReplayView() {
     return () => {
       cancelled = true;
     };
-  }, [sourceFlowId]);
-
-  const sourceOptions = useMemo(
-    () => flows.map((flow) => ({
-      id: flow.id,
-      label: `${flow.method} ${flow.host}${flow.path} · ${flow.statusCode ?? "—"}`,
-    })),
-    [flows],
-  );
+  }, [sourceId]);
 
   const truncatedBodyBlocked = Boolean(draft?.body?.sourceTruncated && !bodyEdited);
+  const isSavedSource = sourceId.startsWith("saved:");
 
   function updateHeader(index: number, patch: Partial<ReplayHeaderDraft>) {
     setDraft((current) => {
@@ -167,22 +182,44 @@ export function ReplayView() {
         <div className="panel-heading">
           <div>
             <strong>Source request</strong>
-            <span>Start from any flow with captured request details</span>
+            <span>Start from captured traffic or a saved collection request</span>
           </div>
         </div>
         <div className="replay-source-content">
-          <label className="field-label" htmlFor="replay-source">Captured flow</label>
+          <label className="field-label" htmlFor="replay-source">Request source</label>
           <select
             id="replay-source"
             className="replay-select"
-            value={sourceFlowId}
-            onChange={(event) => setSourceFlowId(event.target.value)}
+            value={sourceId}
+            onChange={(event) => setSourceId(event.target.value)}
           >
-            {sourceOptions.map((option) => (
-              <option key={option.id} value={option.id}>{option.label}</option>
-            ))}
+            {flows.length > 0 ? (
+              <optgroup label="Captured traffic">
+                {flows.map((flow) => (
+                  <option key={flow.id} value={flow.id}>
+                    {flow.method} {flow.host}{flow.path} · {flow.statusCode ?? "—"}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
+            {savedRequests.length > 0 ? (
+              <optgroup label="Saved requests">
+                {savedRequests.map((request) => (
+                  <option key={request.id} value={`saved:${request.id}`}>
+                    {request.name} · {request.method} {request.url}
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
           </select>
-          {flows.length === 0 ? <p className="muted-copy">Capture a request before using Replay.</p> : null}
+          {flows.length === 0 && savedRequests.length === 0 ? (
+            <p className="muted-copy">Capture or save a request before using Replay.</p>
+          ) : null}
+          <p className="muted-copy">
+            {isSavedSource
+              ? "Saved-request templates can use {{variables}} from the active environment."
+              : "You can add {{variables}} to URL, headers, or text bodies before sending."}
+          </p>
           {loadingDraft ? <p className="muted-copy">Loading replay draft…</p> : null}
           {error ? <div className="error-banner replay-error">{error}</div> : null}
         </div>
@@ -192,7 +229,7 @@ export function ReplayView() {
         <div className="panel-heading">
           <div>
             <strong>Request editor</strong>
-            <span>Sensitive stored values remain backend-only</span>
+            <span>Sensitive stored values stay backend-only; active environment resolves on send</span>
           </div>
           <button
             className="primary"
@@ -224,7 +261,7 @@ export function ReplayView() {
               <div className="replay-section-heading">
                 <div>
                   <h3>Headers</h3>
-                  <span>Disabled rows are not sent.</span>
+                  <span>Disabled rows are not sent. Environment placeholders resolve immediately before execution.</span>
                 </div>
                 <button className="secondary compact" onClick={addHeader}>Add header</button>
               </div>
@@ -275,7 +312,7 @@ export function ReplayView() {
                   <span>{draft.body?.contentType ?? "No request body"}</span>
                 </div>
                 <div className="replay-heading-actions">
-                  {draft.body?.useOriginal ? <span className="replay-badge">Using captured body</span> : null}
+                  {draft.body?.useOriginal ? <span className="replay-badge">Using stored body</span> : null}
                   {draft.body ? (
                     <button className="secondary compact" onClick={removeBody}>Remove body</button>
                   ) : (
@@ -297,7 +334,9 @@ export function ReplayView() {
                     onChange={(event) => updateBody(event.target.value)}
                     spellCheck={false}
                   />
-                  {draft.body.isBinary ? <small className="muted-copy">Binary request body is edited as base64.</small> : null}
+                  {draft.body.isBinary ? (
+                    <small className="muted-copy">Binary request body is edited as base64 and is not environment-interpolated.</small>
+                  ) : null}
                 </>
               ) : (
                 <p className="muted-copy">This request has no body. Add one if the edited request needs it.</p>
@@ -323,7 +362,7 @@ export function ReplayView() {
             ) : null}
           </div>
         ) : (
-          <p className="empty-state">Choose a captured flow with full request details to create a replay draft.</p>
+          <p className="empty-state">Choose a captured or saved request to create a replay draft.</p>
         )}
       </div>
     </section>

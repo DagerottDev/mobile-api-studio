@@ -9,6 +9,8 @@ members = [
   "crates/device-ios",
   "crates/device-android",
   "crates/replay",
+  "crates/workspace-core",
+  "crates/secret-store",
 ]
 
 [workspace.package]

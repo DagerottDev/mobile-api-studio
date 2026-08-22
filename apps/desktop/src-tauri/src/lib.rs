@@ -1,5 +1,8 @@
 mod inspect;
 mod replay_commands;
+mod settings_commands;
+mod sidecar_commands;
+mod workspace_commands;
 
 use capture_core::{CaptureConfig, CaptureEngine, CaptureHandle};
 use capture_mitm::MitmDumpEngine;
@@ -127,7 +130,7 @@ fn list_devices() -> DeviceDiscoveryPayload {
                 recoverable: error.recoverable,
                 suggested_action: Some(
                     "Start ADB from Android Platform Tools and ensure the emulator is visible in `adb devices`."
-                        .into(),
+                    .into(),
                 ),
             }),
         }
@@ -527,10 +530,11 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
     fs::create_dir_all(&app_data_dir).map_err(|error| error.to_string())?;
     let database = Database::open(app_data_dir.join("app.db")).map_err(|error| error.to_string())?;
     let body_store = BodyStore::new(app_data_dir.join("bodies")).map_err(|error| error.to_string())?;
-    let capture_engine = Arc::new(MitmDumpEngine::new(
-        addon_path,
-        app_data_dir.join("mitmproxy"),
-    ));
+    let capture_executable = sidecar_commands::configured_capture_executable(&database)?;
+    let capture_engine = Arc::new(
+        MitmDumpEngine::new(addon_path, app_data_dir.join("mitmproxy"))
+            .with_executable(capture_executable),
+    );
 
     Ok(AppState {
         database,
@@ -623,6 +627,31 @@ pub fn run() {
             inspect::export_curl,
             replay_commands::create_replay_draft,
             replay_commands::send_replay,
+            workspace_commands::update_session_metadata,
+            workspace_commands::archive_session,
+            workspace_commands::delete_session,
+            workspace_commands::search_traffic,
+            workspace_commands::list_collections,
+            workspace_commands::upsert_collection,
+            workspace_commands::delete_collection,
+            workspace_commands::list_saved_requests,
+            workspace_commands::save_flow_to_collection,
+            workspace_commands::delete_saved_request,
+            workspace_commands::list_environments,
+            workspace_commands::upsert_environment,
+            workspace_commands::set_active_environment,
+            workspace_commands::delete_environment,
+            workspace_commands::environment_snapshot,
+            workspace_commands::upsert_environment_variable,
+            workspace_commands::delete_environment_variable,
+            workspace_commands::interpolate_with_active_environment,
+            settings_commands::connection_doctor,
+            settings_commands::list_onboarding_steps,
+            settings_commands::set_onboarding_step,
+            settings_commands::export_workspace,
+            settings_commands::import_workspace,
+            sidecar_commands::capture_executable_setting,
+            sidecar_commands::set_capture_executable,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mobile API Studio");

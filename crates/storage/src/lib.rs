@@ -1,4 +1,5 @@
 mod detail;
+mod workflow;
 
 use core_model::{CaptureSession, FlowSource, FlowSummary, SessionStatus};
 use rusqlite::{params, Connection};
@@ -113,6 +114,7 @@ impl Database {
         connection.execute_batch(MIGRATION_001)?;
         drop(connection);
         detail::initialize(self)?;
+        workflow::initialize(self)?;
         Ok(())
     }
 
@@ -255,6 +257,7 @@ impl Database {
                 &flow.started_at,
             ],
         )?;
+        workflow::upsert_endpoint_index(&connection, flow)?;
         Ok(())
     }
 
@@ -311,7 +314,7 @@ impl Database {
         Ok(count == 0)
     }
 
-    fn connection(&self) -> Result<Connection, StorageError> {
+    pub(super) fn connection(&self) -> Result<Connection, StorageError> {
         let connection = Connection::open(&self.path)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         Ok(connection)
@@ -406,7 +409,13 @@ impl From<io::Error> for StorageError {
     }
 }
 
-fn flow_source_to_str(source: &FlowSource) -> &'static str {
+impl From<serde_json::Error> for StorageError {
+    fn from(value: serde_json::Error) -> Self {
+        Self::Json(value)
+    }
+}
+
+pub(super) fn flow_source_to_str(source: &FlowSource) -> &'static str {
     match source {
         FlowSource::Proxy => "proxy",
         FlowSource::Replay => "replay",
@@ -416,7 +425,7 @@ fn flow_source_to_str(source: &FlowSource) -> &'static str {
     }
 }
 
-fn flow_source_from_str(value: &str) -> FlowSource {
+pub(super) fn flow_source_from_str(value: &str) -> FlowSource {
     match value {
         "proxy" => FlowSource::Proxy,
         "replay" => FlowSource::Replay,
@@ -426,18 +435,20 @@ fn flow_source_from_str(value: &str) -> FlowSource {
     }
 }
 
-fn session_status_to_str(status: &SessionStatus) -> &'static str {
+pub(super) fn session_status_to_str(status: &SessionStatus) -> &'static str {
     match status {
         SessionStatus::Active => "active",
         SessionStatus::Completed => "completed",
         SessionStatus::Interrupted => "interrupted",
+        SessionStatus::Archived => "archived",
     }
 }
 
-fn session_status_from_str(value: &str) -> SessionStatus {
+pub(super) fn session_status_from_str(value: &str) -> SessionStatus {
     match value {
         "completed" => SessionStatus::Completed,
         "interrupted" => SessionStatus::Interrupted,
+        "archived" => SessionStatus::Archived,
         _ => SessionStatus::Active,
     }
 }

@@ -2,17 +2,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { ConnectView } from "./components/ConnectView";
 import { ReplayView } from "./components/ReplayView";
+import { SettingsView } from "./components/SettingsView";
+import { SidecarSettingsPanel } from "./components/SidecarSettingsPanel";
 import { TrafficView } from "./components/TrafficView";
+import { WorkspaceView } from "./components/WorkspaceView";
 import type { CaptureSession } from "./types";
 
-type Route = "Connect" | "Traffic" | "Replay" | "Settings";
+type Route = "Connect" | "Traffic" | "Replay" | "Workspace" | "Settings";
 
-const routes: Route[] = ["Connect", "Traffic", "Replay", "Settings"];
+const routes: Route[] = ["Connect", "Traffic", "Replay", "Workspace", "Settings"];
 
 function App() {
   const [route, setRoute] = useState<Route>("Connect");
   const [health, setHealth] = useState("checking Rust core…");
   const [sessions, setSessions] = useState<CaptureSession[]>([]);
+  const [replaySavedRequestId, setReplaySavedRequestId] = useState<string | null>(null);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -31,6 +35,11 @@ function App() {
     const timer = window.setInterval(() => void refreshSessions(), 2000);
     return () => window.clearInterval(timer);
   }, [refreshSessions]);
+
+  function openSavedRequest(requestId: string) {
+    setReplaySavedRequestId(requestId);
+    setRoute("Replay");
+  }
 
   return (
     <div className="app-shell">
@@ -57,7 +66,7 @@ function App() {
 
         <div className="sidebar-metric">
           <span>Sessions</span>
-          <strong>{sessions.length}</strong>
+          <strong>{sessions.filter((session) => session.status !== "archived").length}</strong>
         </div>
 
         <div className="core-status">
@@ -74,27 +83,25 @@ function App() {
               {route === "Connect"
                 ? "Discover and connect local mobile runtimes"
                 : route === "Traffic"
-                  ? "Inspect captured mobile API traffic"
+                  ? "Search and inspect traffic across capture sessions"
                   : route === "Replay"
-                    ? "Edit and resend captured requests"
-                    : "Mobile API Studio"}
+                    ? "Edit and resend captured or saved requests"
+                    : route === "Workspace"
+                      ? "Manage sessions, saved requests, and environments"
+                      : "Connection Doctor, onboarding, backup, restore, and capture setup"}
             </p>
           </div>
         </header>
 
         {route === "Connect" ? <ConnectView /> : null}
         {route === "Traffic" ? <TrafficView /> : null}
-        {route === "Replay" ? <ReplayView /> : null}
-
+        {route === "Replay" ? <ReplayView savedRequestId={replaySavedRequestId} /> : null}
+        {route === "Workspace" ? <WorkspaceView onOpenReplay={openSavedRequest} /> : null}
         {route === "Settings" ? (
-          <section className="placeholder panel">
-            <span className="eyebrow">Settings</span>
-            <h2>Settings expands in Phase 2.</h2>
-            <p>
-              Phase 1 focuses on the complete capture, inspect, and replay workflow. Environment,
-              collection, filtering, and connection-preference management are part of the next phase.
-            </p>
-          </section>
+          <>
+            <SettingsView />
+            <SidecarSettingsPanel />
+          </>
         ) : null}
       </main>
     </div>
