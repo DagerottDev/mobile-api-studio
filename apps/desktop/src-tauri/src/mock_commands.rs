@@ -54,6 +54,13 @@ pub fn create_mock_from_flow(
         .body
         .as_ref()
         .map(|reference| {
+            if reference.is_truncated {
+                return Err(AppError::new(
+                    "mock_body_truncated",
+                    "The captured response body is truncated. Create a manual mock body or recapture with a larger body limit before creating the mock.",
+                    true,
+                ));
+            }
             let bytes = state.body_store.read(&reference.sha256).map_err(storage_error)?;
             let (encoding, data) = if reference.is_binary {
                 (MockBodyEncoding::Base64, BASE64.encode(bytes))
@@ -186,6 +193,17 @@ fn validate_rule(rule: &MockRule) -> Result<(), AppError> {
                 "Mock status code must be between 100 and 599.",
                 true,
             ));
+        }
+    }
+    if let Some(body) = rule.response_body.as_ref() {
+        if matches!(body.encoding, MockBodyEncoding::Base64) {
+            BASE64.decode(body.data.as_bytes()).map_err(|error| {
+                AppError::new(
+                    "mock_rule_body_invalid_base64",
+                    format!("Mock response body is not valid base64: {error}"),
+                    true,
+                )
+            })?;
         }
     }
     Ok(())
