@@ -1,6 +1,7 @@
 export type MockPathMatch = "exact" | "normalized";
 export type MockFailureMode = "none" | "drop" | "timeout";
 export type MockBodyEncoding = "text" | "base64";
+export type BreakpointStage = "request" | "response";
 
 export interface MockHeaderMutation {
   name: string;
@@ -41,4 +42,44 @@ export interface MockRule {
   sourceFlowId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface MockFixture {
+  schemaVersion: number;
+  id: string;
+  name: string;
+  statusCode: number;
+  responseHeaders: MockHeaderMutation[];
+  responseBody: MockBodyOverride | null;
+  sourceFlowId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BreakpointHeader {
+  name: string;
+  value: string;
+}
+
+export interface BreakpointBody {
+  dataBase64: string;
+  contentType: string | null;
+  isBinary: boolean;
+  isTruncated: boolean;
+}
+
+export interface PendingBreakpoint {
+  schemaVersion: number;
+  id: string;
+  flowId: string;
+  ruleId: string;
+  ruleName: string;
+  stage: BreakpointStage;
+  createdAt: string;
+  deadlineAt: string;
+  method: string;
+  url: string;
+  headers: BreakpointHeader[];
+  body: BreakpointBody | null;
+  statusCode: number | null;
 }
