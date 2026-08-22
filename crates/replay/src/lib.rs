@@ -1,5 +1,5 @@
 use core_model::HeaderValue;
-use reqwest::{header::{HeaderName, HeaderValue as HttpHeaderValue}, Client, Method};
+use reqwest::{header::{HeaderName, HeaderValue as HttpHeaderValue}, Client, Method, Url};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -50,6 +50,11 @@ pub struct ReplayRequest {
 #[derive(Debug, Clone)]
 pub struct ReplayExecution {
     pub request: ReplayRequest,
+    pub scheme: String,
+    pub host: String,
+    pub port: Option<u16>,
+    pub path: String,
+    pub query: Option<String>,
     pub status_code: u16,
     pub reason: Option<String>,
     pub response_headers: Vec<HeaderValue>,
@@ -78,9 +83,20 @@ impl ReplayEngine {
     pub async fn execute(&self, request: ReplayRequest) -> Result<ReplayExecution, ReplayError> {
         let method = Method::from_bytes(request.method.as_bytes())
             .map_err(|error| ReplayError::invalid_request(format!("invalid method: {error}")))?;
+        let parsed = Url::parse(&request.url)
+            .map_err(|error| ReplayError::invalid_request(format!("invalid URL: {error}")))?;
+        let scheme = parsed.scheme().to_string();
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| ReplayError::invalid_request("URL must contain a host"))?
+            .to_string();
+        let port = parsed.port();
+        let path = parsed.path().to_string();
+        let query = parsed.query().map(str::to_string);
+
         let started_at = epoch_millis();
         let start = Instant::now();
-        let mut builder = self.client.request(method, &request.url);
+        let mut builder = self.client.request(method, parsed);
 
         for header in &request.headers {
             if should_skip_header(&header.name) {
@@ -122,20 +138,25 @@ impl ReplayEngine {
         let mut response_body_truncated = false;
         while let Some(chunk) = response.chunk().await.map_err(ReplayError::send)? {
             let remaining = MAX_REPLAY_RESPONSE_BYTES.saturating_sub(response_body.len());
+            if remaining == 0 {
+                response_body_truncated = true;
+                break;
+            }
             if chunk.len() > remaining {
                 response_body.extend_from_slice(&chunk[..remaining]);
                 response_body_truncated = true;
                 break;
             }
             response_body.extend_from_slice(&chunk);
-            if response_body.len() >= MAX_REPLAY_RESPONSE_BYTES {
-                response_body_truncated = true;
-                break;
-            }
         }
 
         Ok(ReplayExecution {
             request,
+            scheme,
+            host,
+            port,
+            path,
+            query,
             status_code,
             reason,
             response_headers,
