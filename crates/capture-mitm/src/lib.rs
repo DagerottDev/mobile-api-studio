@@ -252,11 +252,20 @@ enum BridgeEvent {
         request: BridgeRequest,
         response: BridgeResponse,
         timing: BridgeTiming,
+        mock_rule_id: Option<String>,
+        mock_rule_name: Option<String>,
     },
     FlowFailed {
         id: String,
         code: String,
         message: String,
+        mock_rule_id: Option<String>,
+        mock_rule_name: Option<String>,
+    },
+    MockRulesFailed {
+        code: String,
+        message: String,
+        rule_id: Option<String>,
     },
 }
 
@@ -317,6 +326,8 @@ fn publish_bridge_event(
             request,
             response,
             timing,
+            mock_rule_id,
+            mock_rule_name: _,
         } => match normalize_captured_flow(
             session_id,
             id,
@@ -325,6 +336,7 @@ fn publish_bridge_event(
             request,
             response,
             timing,
+            mock_rule_id.is_some(),
         ) {
             Ok(flow) => {
                 let _ = sender.send(CaptureEvent::FlowDetailCompleted(flow));
@@ -337,11 +349,31 @@ fn publish_bridge_event(
                 });
             }
         },
-        BridgeEvent::FlowFailed { id, code, message } => {
+        BridgeEvent::FlowFailed {
+            id,
+            code,
+            message,
+            mock_rule_id: _,
+            mock_rule_name: _,
+        } => {
             let _ = sender.send(CaptureEvent::FlowFailed {
                 flow_id: id,
                 code,
                 message,
+            });
+        }
+        BridgeEvent::MockRulesFailed {
+            code,
+            message,
+            rule_id,
+        } => {
+            let message = rule_id
+                .map(|id| format!("Mock rule {id}: {message}"))
+                .unwrap_or(message);
+            let _ = sender.send(CaptureEvent::EngineFailed {
+                code,
+                message,
+                recoverable: true,
             });
         }
     }
@@ -356,6 +388,7 @@ fn normalize_captured_flow(
     request: BridgeRequest,
     response: BridgeResponse,
     timing: BridgeTiming,
+    mocked: bool,
 ) -> Result<CapturedFlow, String> {
     let request_body = decode_body(request.body)?;
     let response_body = decode_body(response.body)?;
@@ -365,7 +398,7 @@ fn normalize_captured_flow(
         schema_version: SCHEMA_VERSION,
         id,
         session_id: Some(session_id.to_string()),
-        source: FlowSource::Proxy,
+        source: if mocked { FlowSource::Mock } else { FlowSource::Proxy },
         method: request.method.clone(),
         host: request.host.clone(),
         path: request.path.clone(),
