@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useState } from "react";
-import type { FlowSummary } from "./types";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { CaptureSession, FlowSummary } from "./types";
 
 type Route = "Connect" | "Traffic" | "Replay" | "Settings";
 
@@ -10,30 +10,44 @@ function App() {
   const [route, setRoute] = useState<Route>("Traffic");
   const [health, setHealth] = useState("checking Rust core…");
   const [flows, setFlows] = useState<FlowSummary[]>([]);
+  const [sessions, setSessions] = useState<CaptureSession[]>([]);
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  const refreshFlows = useCallback(async () => {
+    const result = await invoke<FlowSummary[]>("list_flows");
+    setFlows(result);
+    setSelectedFlowId((current) => current ?? result[0]?.id ?? null);
+  }, []);
 
   useEffect(() => {
     invoke<string>("health")
       .then(setHealth)
       .catch((error) => setHealth(`Rust unavailable: ${String(error)}`));
 
-    invoke<FlowSummary[]>("list_flows")
-      .then((result) => {
-        setFlows(result);
-        setSelectedFlowId(result[0]?.id ?? null);
-        setLoadError(null);
-      })
-      .catch((error) => {
-        setFlows([]);
-        setLoadError(String(error));
-      });
-  }, []);
+    Promise.all([
+      refreshFlows(),
+      invoke<CaptureSession[]>("list_sessions").then(setSessions),
+    ])
+      .then(() => setLoadError(null))
+      .catch((error) => setLoadError(String(error)));
+  }, [refreshFlows]);
 
   const selectedFlow = useMemo(
     () => flows.find((flow) => flow.id === selectedFlowId) ?? null,
     [flows, selectedFlowId],
   );
+
+  async function addDemoFlow() {
+    try {
+      const flow = await invoke<FlowSummary>("ingest_demo_flow");
+      await refreshFlows();
+      setSelectedFlowId(flow.id);
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(String(error));
+    }
+  }
 
   return (
     <div className="app-shell">
@@ -58,6 +72,11 @@ function App() {
           ))}
         </nav>
 
+        <div className="sidebar-metric">
+          <span>Sessions</span>
+          <strong>{sessions.length}</strong>
+        </div>
+
         <div className="core-status">
           <span className="status-dot" />
           <span>{health}</span>
@@ -70,9 +89,15 @@ function App() {
             <h1>{route}</h1>
             <p>Phase 0 foundation</p>
           </div>
-          <button className="primary" disabled>
-            Connect device
-          </button>
+          {route === "Traffic" ? (
+            <button className="secondary" onClick={addDemoFlow}>
+              Ingest demo flow
+            </button>
+          ) : (
+            <button className="primary" disabled>
+              Connect device
+            </button>
+          )}
         </header>
 
         {route === "Traffic" ? (
@@ -83,7 +108,7 @@ function App() {
                   <strong>Stored traffic</strong>
                   <span>{flows.length} flows loaded from SQLite</span>
                 </div>
-                <span className="pill">fixture source</span>
+                <span className="pill">capture event path</span>
               </div>
 
               {loadError ? <div className="error-banner">{loadError}</div> : null}
@@ -132,6 +157,8 @@ function App() {
                 <dl className="detail-grid">
                   <dt>Flow ID</dt>
                   <dd>{selectedFlow.id}</dd>
+                  <dt>Session</dt>
+                  <dd>{selectedFlow.sessionId ?? "unassigned"}</dd>
                   <dt>Source</dt>
                   <dd>{selectedFlow.source}</dd>
                   <dt>Method</dt>
@@ -156,7 +183,8 @@ function App() {
             <h2>{route} is intentionally minimal in Phase 0.</h2>
             <p>
               The current implementation establishes the desktop shell, Rust
-              domain model, capture abstraction, and persistent local storage.
+              domain model, capture abstraction, session model, and persistent
+              local storage. Device integrations begin in Phase 1.
             </p>
           </section>
         )}
