@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use core_model::FlowSummary;
+use core_model::{FlowSummary, HeaderValue, Timing};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -31,13 +31,75 @@ pub struct CaptureHandle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureLifecycleState {
+    Idle,
+    Preparing,
+    Starting,
+    Ready,
+    Stopping,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturedBody {
+    pub bytes: Vec<u8>,
+    pub content_type: Option<String>,
+    pub encoding: Option<String>,
+    pub is_binary: bool,
+    pub is_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturedRequest {
+    pub method: String,
+    pub url: String,
+    pub scheme: String,
+    pub host: String,
+    pub port: Option<u16>,
+    pub path: String,
+    pub query: Option<String>,
+    pub headers: Vec<HeaderValue>,
+    pub body: Option<CapturedBody>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturedResponse {
+    pub status_code: u16,
+    pub reason: Option<String>,
+    pub headers: Vec<HeaderValue>,
+    pub body: Option<CapturedBody>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturedFlow {
+    pub summary: FlowSummary,
+    pub request: CapturedRequest,
+    pub response: Option<CapturedResponse>,
+    pub timing: Timing,
+    pub error_code: Option<String>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum CaptureEvent {
+    LifecycleChanged(CaptureLifecycleState),
     EngineReady(CaptureCapabilities),
     FlowStarted(FlowSummary),
     FlowUpdated(FlowSummary),
     FlowCompleted(FlowSummary),
+    FlowDetailCompleted(CapturedFlow),
     FlowFailed { flow_id: String, code: String, message: String },
+    EngineFailed {
+        code: String,
+        message: String,
+        recoverable: bool,
+    },
     EngineStopped,
 }
 

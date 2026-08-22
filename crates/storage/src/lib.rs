@@ -1,3 +1,5 @@
+mod detail;
+
 use core_model::{CaptureSession, FlowSource, FlowSummary, SessionStatus};
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
@@ -109,6 +111,8 @@ impl Database {
     pub fn initialize(&self) -> Result<(), StorageError> {
         let connection = self.connection()?;
         connection.execute_batch(MIGRATION_001)?;
+        drop(connection);
+        detail::initialize(self)?;
         Ok(())
     }
 
@@ -373,6 +377,7 @@ pub struct StoredBody {
 pub enum StorageError {
     Sqlite(rusqlite::Error),
     Io(io::Error),
+    Json(serde_json::Error),
     InvalidBodyHash,
 }
 
@@ -381,6 +386,7 @@ impl std::fmt::Display for StorageError {
         match self {
             Self::Sqlite(error) => write!(formatter, "SQLite error: {error}"),
             Self::Io(error) => write!(formatter, "I/O error: {error}"),
+            Self::Json(error) => write!(formatter, "JSON error: {error}"),
             Self::InvalidBodyHash => write!(formatter, "invalid body hash"),
         }
     }

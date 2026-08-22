@@ -1,0 +1,59 @@
+.field-label {
+  display: block;
+  margin-top: 16px;
+  color: #858c9b;
+  font-size: 12px;
+}
+
+.text-input {
+  width: 100%;
+  margin-top: 7px;
+  border: 1px solid #343947;
+  border-radius: 8px;
+  background: #0f1217;
+  color: #e8eaf0;
+  padding: 10px 11px;
+  outline: none;
+}
+
+.text-input:focus {
+  border-color: #596273;
+}
+
+.primary {
+  cursor: pointer;
+  background: #e3e6ec;
+  border-color: #e3e6ec;
+  color: #15181e;
+}
+
+.primary:hover:not(:disabled) {
+  background: #ffffff;
+}
+
+.primary:disabled,
+.secondary:disabled,
+.device-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.secondary.wide {
+  width: 100%;
+  margin-top: 20px;
+}
+
+.error-banner strong {
+  color: #ffd0d0;
+}
+
+.error-banner .secondary {
+  margin-left: 10px;
+}
+
+.selected-device-detail > small {
+  display: block;
+  margin-top: 9px;
+  color: #7f8795;
+  line-height: 1.45;
+}
