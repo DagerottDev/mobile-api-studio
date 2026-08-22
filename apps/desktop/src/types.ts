@@ -1,5 +1,5 @@
 export type FlowSource = "proxy" | "replay" | "mock" | "sdk" | "fixture";
-export type SessionStatus = "active" | "completed" | "interrupted";
+export type SessionStatus = "active" | "completed" | "interrupted" | "archived";
 export type DevicePlatform = "ios" | "android";
 
 export interface AppError {
@@ -171,4 +171,91 @@ export interface ReplayDraft {
   url: string;
   headers: ReplayHeaderDraft[];
   body: ReplayBodyDraft | null;
+}
+
+export interface NormalizedEndpoint {
+  key: string;
+  method: string;
+  host: string;
+  pathTemplate: string;
+}
+
+export interface TrafficSearchQuery {
+  text: string | null;
+  sessionId: string | null;
+  source: FlowSource | null;
+  method: string | null;
+  statusClass: number | null;
+  endpointKey: string | null;
+  limit: number | null;
+}
+
+export interface TrafficSearchResult {
+  flow: FlowSummary;
+  endpoint: NormalizedEndpoint;
+  sessionName: string | null;
+}
+
+export interface SavedCollection {
+  schemaVersion: number;
+  id: string;
+  name: string;
+  description: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SavedRequestBody {
+  text: string | null;
+  base64: string | null;
+  contentType: string | null;
+  isBinary: boolean;
+}
+
+export interface SavedRequest {
+  schemaVersion: number;
+  id: string;
+  collectionId: string;
+  name: string;
+  method: string;
+  url: string;
+  headers: HeaderValue[];
+  body: SavedRequestBody | null;
+  sourceFlowId: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Environment {
+  schemaVersion: number;
+  id: string;
+  name: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EnvironmentVariable {
+  schemaVersion: number;
+  id: string;
+  environmentId: string;
+  key: string;
+  value: string | null;
+  isSecret: boolean;
+  secretRef: string | null;
+  enabled: boolean;
+  sortOrder: number;
+}
+
+export interface EnvironmentSnapshot {
+  environment: Environment;
+  variables: EnvironmentVariable[];
+}
+
+export interface InterpolationResult {
+  value: string;
+  usedSecret: boolean;
+  missingVariables: string[];
 }
