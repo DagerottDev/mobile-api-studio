@@ -11,18 +11,23 @@ function App() {
   const [health, setHealth] = useState("checking Rust core…");
   const [flows, setFlows] = useState<FlowSummary[]>([]);
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<string>("health")
       .then(setHealth)
       .catch((error) => setHealth(`Rust unavailable: ${String(error)}`));
 
-    invoke<FlowSummary[]>("list_fake_flows")
+    invoke<FlowSummary[]>("list_flows")
       .then((result) => {
         setFlows(result);
         setSelectedFlowId(result[0]?.id ?? null);
+        setLoadError(null);
       })
-      .catch(() => setFlows([]));
+      .catch((error) => {
+        setFlows([]);
+        setLoadError(String(error));
+      });
   }, []);
 
   const selectedFlow = useMemo(
@@ -75,11 +80,13 @@ function App() {
             <div className="traffic-list panel">
               <div className="panel-heading">
                 <div>
-                  <strong>Fixture traffic</strong>
-                  <span>{flows.length} flows</span>
+                  <strong>Stored traffic</strong>
+                  <span>{flows.length} flows loaded from SQLite</span>
                 </div>
-                <span className="pill">fake capture</span>
+                <span className="pill">fixture source</span>
               </div>
+
+              {loadError ? <div className="error-banner">{loadError}</div> : null}
 
               <div className="flow-header flow-grid">
                 <span>Method</span>
@@ -139,9 +146,7 @@ function App() {
                   <dd>{selectedFlow.startedAt}</dd>
                 </dl>
               ) : (
-                <p className="empty-state">
-                  No flows yet. Phase 0 will next persist fixture events in SQLite.
-                </p>
+                <p className="empty-state">No stored flows.</p>
               )}
             </div>
           </section>
@@ -150,8 +155,8 @@ function App() {
             <span className="eyebrow">{route}</span>
             <h2>{route} is intentionally minimal in Phase 0.</h2>
             <p>
-              We are proving the Rust/Tauri/domain-model pipeline before adding
-              simulator, emulator, proxy, replay, and settings workflows.
+              The current implementation establishes the desktop shell, Rust
+              domain model, capture abstraction, and persistent local storage.
             </p>
           </section>
         )}

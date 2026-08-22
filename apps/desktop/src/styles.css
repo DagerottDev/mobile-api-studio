@@ -20,8 +20,8 @@ button { font: inherit; }
 nav { display: grid; gap: 6px; }
 .nav-item { border: 0; background: transparent; color: #aeb4c0; text-align: left; padding: 10px 12px; border-radius: 8px; cursor: pointer; }
 .nav-item:hover, .nav-item.active { background: #1c2029; color: #ffffff; }
-.core-status { margin-top: auto; display: flex; align-items: center; gap: 8px; color: #858c9b; font-size: 12px; padding: 8px; }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; background: #7ed19a; box-shadow: 0 0 0 4px rgba(126, 209, 154, 0.08); }
+.core-status { margin-top: auto; display: flex; align-items: center; gap: 8px; color: #858c9b; font-size: 12px; padding: 8px; overflow-wrap: anywhere; }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; background: #7ed19a; box-shadow: 0 0 0 4px rgba(126, 209, 154, 0.08); flex: 0 0 auto; }
 .workspace { padding: 22px; overflow: hidden; }
 .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
 .toolbar h1 { margin: 0; font-size: 23px; }
@@ -29,10 +29,11 @@ nav { display: grid; gap: 6px; }
 .primary { border: 1px solid #343947; background: #272c37; color: #7c8290; border-radius: 8px; padding: 9px 13px; }
 .panel { border: 1px solid #242832; background: #12151b; border-radius: 12px; overflow: hidden; }
 .traffic-layout { display: grid; grid-template-columns: minmax(600px, 1.6fr) minmax(320px, 0.9fr); gap: 14px; height: calc(100vh - 100px); }
-.panel-heading { height: 62px; padding: 13px 16px; border-bottom: 1px solid #242832; display: flex; align-items: center; justify-content: space-between; }
+.panel-heading { min-height: 62px; padding: 13px 16px; border-bottom: 1px solid #242832; display: flex; align-items: center; justify-content: space-between; }
 .panel-heading strong, .panel-heading span { display: block; }
 .panel-heading span { color: #858c9b; font-size: 12px; margin-top: 3px; }
 .panel-heading .pill { display: inline-block; margin: 0; border: 1px solid #343947; color: #aeb4c0; padding: 4px 7px; border-radius: 999px; }
+.error-banner { margin: 12px 14px 4px; padding: 10px 12px; border: 1px solid #5b3030; border-radius: 8px; color: #efb0b0; background: #231718; font-size: 12px; overflow-wrap: anywhere; }
 .flow-grid { display: grid; grid-template-columns: 72px minmax(280px, 1fr) 72px 84px; align-items: center; }
 .flow-header { padding: 8px 14px; color: #6f7685; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid #242832; }
 .flow-rows { overflow: auto; max-height: calc(100vh - 205px); }

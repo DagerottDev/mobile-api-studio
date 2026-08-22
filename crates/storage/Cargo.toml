@@ -1,0 +1,11 @@
+[package]
+name = "storage"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+core-model = { path = "../core-model" }
+rusqlite.workspace = true
+sha2.workspace = true
