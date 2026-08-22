@@ -15,6 +15,7 @@ function App() {
   const [route, setRoute] = useState<Route>("Connect");
   const [health, setHealth] = useState("checking Rust core…");
   const [sessions, setSessions] = useState<CaptureSession[]>([]);
+  const [replaySavedRequestId, setReplaySavedRequestId] = useState<string | null>(null);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -33,6 +34,11 @@ function App() {
     const timer = window.setInterval(() => void refreshSessions(), 2000);
     return () => window.clearInterval(timer);
   }, [refreshSessions]);
+
+  function openSavedRequest(requestId: string) {
+    setReplaySavedRequestId(requestId);
+    setRoute("Replay");
+  }
 
   return (
     <div className="app-shell">
@@ -78,7 +84,7 @@ function App() {
                 : route === "Traffic"
                   ? "Search and inspect traffic across capture sessions"
                   : route === "Replay"
-                    ? "Edit and resend captured requests"
+                    ? "Edit and resend captured or saved requests"
                     : route === "Workspace"
                       ? "Manage sessions, saved requests, and environments"
                       : "Connection Doctor, onboarding, backup, and restore"}
@@ -88,8 +94,8 @@ function App() {
 
         {route === "Connect" ? <ConnectView /> : null}
         {route === "Traffic" ? <TrafficView /> : null}
-        {route === "Replay" ? <ReplayView /> : null}
-        {route === "Workspace" ? <WorkspaceView /> : null}
+        {route === "Replay" ? <ReplayView savedRequestId={replaySavedRequestId} /> : null}
+        {route === "Workspace" ? <WorkspaceView onOpenReplay={openSavedRequest} /> : null}
         {route === "Settings" ? <SettingsView /> : null}
       </main>
     </div>
