@@ -1,0 +1,234 @@
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.settings-panel {
+  min-width: 0;
+}
+
+.bundle-panel {
+  grid-column: 1 / -1;
+}
+
+.settings-error,
+.settings-message {
+  margin: 14px 16px 0;
+}
+
+.settings-message {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.doctor-summary,
+.import-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 16px;
+}
+
+.doctor-summary span,
+.import-summary span {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.doctor-summary strong,
+.import-summary strong {
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.doctor-checks {
+  display: grid;
+  gap: 10px;
+  padding: 0 16px 16px;
+}
+
+.doctor-check {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--surface-raised);
+}
+
+.doctor-check-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.doctor-check-heading span {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.doctor-check p {
+  margin: 7px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.doctor-check small {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.doctor-pass .doctor-check-heading span {
+  color: var(--success);
+}
+
+.doctor-warning .doctor-check-heading span {
+  color: var(--warning);
+}
+
+.doctor-fail .doctor-check-heading span {
+  color: var(--danger);
+}
+
+.onboarding-list {
+  display: grid;
+  gap: 0;
+  padding: 6px 16px 16px;
+}
+
+.onboarding-item {
+  display: grid;
+  grid-template-columns: 22px 28px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer;
+}
+
+.onboarding-item:last-child {
+  border-bottom: 0;
+}
+
+.onboarding-item input {
+  margin-top: 3px;
+}
+
+.onboarding-number {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.onboarding-item > span:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.onboarding-item small {
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.onboarding-item.completed strong,
+.onboarding-item.completed small {
+  opacity: 0.65;
+}
+
+.privacy-note {
+  margin: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  color: var(--text-secondary);
+  background: var(--surface-raised);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.bundle-textarea {
+  width: calc(100% - 32px);
+  min-height: 210px;
+  margin: 0 16px 12px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--surface-raised);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  box-sizing: border-box;
+}
+
+.import-textarea {
+  min-height: 180px;
+}
+
+.settings-actions,
+.import-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0 16px 16px;
+}
+
+.import-controls {
+  padding-top: 16px;
+}
+
+.import-controls input[type="file"] {
+  flex: 1 1 300px;
+  min-width: 220px;
+  color: var(--text-secondary);
+}
+
+.import-controls select {
+  min-width: 170px;
+}
+
+.import-summary {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  padding-top: 4px;
+}
+
+@media (max-width: 1080px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .bundle-panel {
+    grid-column: auto;
+  }
+
+  .doctor-summary,
+  .import-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
