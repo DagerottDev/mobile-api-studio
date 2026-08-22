@@ -12,6 +12,7 @@ members = [
   "crates/workspace-core",
   "crates/secret-store",
   "crates/mock-core",
+  "crates/mock-storage",
 ]
 
 [workspace.package]
