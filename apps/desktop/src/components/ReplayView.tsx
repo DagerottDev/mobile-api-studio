@@ -113,6 +113,26 @@ export function ReplayView() {
     });
   }
 
+  function addBody() {
+    setBodyEdited(true);
+    setDraft((current) => current ? {
+      ...current,
+      body: {
+        text: "",
+        base64: null,
+        isBinary: false,
+        contentType: "application/json",
+        useOriginal: false,
+        sourceTruncated: false,
+      },
+    } : current);
+  }
+
+  function removeBody() {
+    setBodyEdited(true);
+    setDraft((current) => current ? { ...current, body: null } : current);
+  }
+
   function updateBody(value: string) {
     setBodyEdited(true);
     setDraft((current) => {
@@ -252,9 +272,16 @@ export function ReplayView() {
               <div className="replay-section-heading">
                 <div>
                   <h3>Body</h3>
-                  <span>{draft.body?.contentType ?? "No content type captured"}</span>
+                  <span>{draft.body?.contentType ?? "No request body"}</span>
                 </div>
-                {draft.body?.useOriginal ? <span className="replay-badge">Using captured body</span> : null}
+                <div className="replay-heading-actions">
+                  {draft.body?.useOriginal ? <span className="replay-badge">Using captured body</span> : null}
+                  {draft.body ? (
+                    <button className="secondary compact" onClick={removeBody}>Remove body</button>
+                  ) : (
+                    <button className="secondary compact" onClick={addBody}>Add body</button>
+                  )}
+                </div>
               </div>
 
               {draft.body ? (
@@ -273,7 +300,7 @@ export function ReplayView() {
                   {draft.body.isBinary ? <small className="muted-copy">Binary request body is edited as base64.</small> : null}
                 </>
               ) : (
-                <p className="muted-copy">This request has no body.</p>
+                <p className="muted-copy">This request has no body. Add one if the edited request needs it.</p>
               )}
             </section>
 
