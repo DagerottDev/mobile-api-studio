@@ -146,3 +146,12 @@ export interface BodyPayload {
   text: string | null;
   base64: string | null;
 }
+
+export interface ReplayDraft {
+  sourceFlowId: string | null;
+  sessionId: string | null;
+  method: string;
+  url: string;
+  headers: HeaderValue[];
+  bodyText: string | null;
+}
