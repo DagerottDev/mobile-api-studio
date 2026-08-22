@@ -171,6 +171,35 @@ impl Database {
         Ok(())
     }
 
+    pub fn attribute_session_from_request_header(
+        &self,
+        header_name: &str,
+        header_value: &str,
+        app_id: &str,
+    ) -> Result<usize, StorageError> {
+        let connection = self.connection()?;
+        let changed = connection.execute(
+            r#"
+            UPDATE sessions
+            SET app_id = ?3
+            WHERE id IN (
+                SELECT f.session_id
+                FROM flows f
+                JOIN headers h ON h.flow_id = f.id
+                WHERE h.side = 'request'
+                  AND h.name = ?1 COLLATE NOCASE
+                  AND h.value = ?2
+                  AND f.session_id IS NOT NULL
+                ORDER BY f.started_at DESC
+                LIMIT 1
+            )
+              AND (app_id IS NULL OR app_id = '' OR app_id = ?3)
+            "#,
+            params![header_name, header_value, app_id],
+        )?;
+        Ok(changed)
+    }
+
     pub fn list_sessions(&self, limit: usize) -> Result<Vec<CaptureSession>, StorageError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(

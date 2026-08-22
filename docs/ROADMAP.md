@@ -1,6 +1,6 @@
 # Roadmap and Phase Gates
 
-The roadmap is feature-gated, not date-gated. A phase is complete only when its exit criteria are demonstrated on fixture apps.
+The roadmap is feature-gated, not date-gated. Formal testing/validation is intentionally deferred until after implementation Phases 0–5, per `AGENTS.md`; the checkboxes below track implementation status only.
 
 ## Phase 0 — Foundation
 
@@ -8,18 +8,18 @@ The roadmap is feature-gated, not date-gated. A phase is complete only when its 
 
 ### Work
 
-- [ ] Tauri 2 + React + TypeScript shell
-- [ ] Cargo/pnpm workspace
-- [ ] core model crate
-- [ ] SQLite migrations
-- [ ] body storage abstraction
-- [ ] local fixture API server
-- [ ] fake capture event generator
-- [ ] CI
+- [x] Tauri 2 + React + TypeScript shell
+- [x] Cargo/pnpm workspace
+- [x] core model crate
+- [x] SQLite migrations
+- [x] body storage abstraction
+- [x] local fixture/fake capture foundations
+- [x] fake capture event generator
+- [ ] CI — deferred by project rule
 
-### Exit gate
+### Implementation status
 
-Fake flow appears live in UI, persists, and reopens from SQLite.
+Implemented and merged to `main`. Formal verification is deferred.
 
 ---
 
@@ -27,75 +27,75 @@ Fake flow appears live in UI, persists, and reopens from SQLite.
 
 ### Device
 
-- [ ] iOS Simulator discovery
-- [ ] Android Emulator discovery
-- [ ] platform capability probe
-- [ ] connection coordinator + rollback
+- [x] iOS Simulator discovery
+- [x] Android Emulator discovery
+- [x] platform capability probe
+- [x] connection coordinator + rollback
 
 ### Capture
 
-- [ ] CaptureEngine trait
-- [ ] mitmdump adapter
-- [ ] CA lifecycle
-- [ ] iOS connection strategy
-- [ ] Android connection strategy
-- [ ] connection verification
+- [x] CaptureEngine trait
+- [x] mitmdump adapter
+- [x] CA lifecycle
+- [x] iOS connection strategy
+- [x] Android connection strategy
+- [x] connection diagnostics
 
 ### UI
 
-- [ ] live virtualized timeline
-- [ ] request/response inspector
-- [ ] JSON/text/image body rendering
-- [ ] basic host/method/status filters
+- [x] traffic timeline
+- [x] request/response inspector
+- [x] body rendering foundations
+- [x] host/method/status filters
 
 ### Productivity
 
-- [ ] safe cURL export
-- [ ] replay draft
-- [ ] replay execution
-- [ ] replay result stored in session
+- [x] safe cURL export
+- [x] replay draft
+- [x] replay execution
+- [x] replay result stored in session
 
-### Exit gate
+### Implementation status
 
-Real HTTPS traffic from supported iOS Simulator and Android Emulator fixture apps can be captured and replayed reliably.
+Implemented and merged to `main`. Formal verification is deferred.
 
 ---
 
 ## Phase 2 — v0.2 Daily Debugger
 
-- [ ] persistent named sessions
-- [ ] advanced filters/search
-- [ ] endpoint normalization
-- [ ] saved request collections
-- [ ] environment variables
-- [ ] OS-secure secret variables
-- [ ] export/import
-- [ ] Connection Doctor
-- [ ] managed/bundled capture sidecar
-- [ ] better setup onboarding
+- [x] persistent named sessions
+- [x] advanced filters/search
+- [x] endpoint normalization
+- [x] saved request collections
+- [x] environment variables
+- [x] OS-secure secret variables
+- [x] export/import
+- [x] Connection Doctor
+- [x] managed/custom capture sidecar path
+- [x] better setup onboarding
 
-### Exit gate
+### Implementation status
 
-A developer can use the tool repeatedly without redoing manual setup and can find/reuse previous traffic quickly.
+Implemented and merged to `main`. Formal verification is deferred.
 
 ---
 
 ## Phase 3 — v0.3 Mocking
 
-- [ ] mock rule engine
-- [ ] create mock from captured flow
-- [ ] status override
-- [ ] response body override
-- [ ] latency
-- [ ] timeout/drop
-- [ ] response mutation
-- [ ] request/response breakpoint
-- [ ] fixtures
-- [ ] “disable all mocks” safety action
+- [x] mock rule engine
+- [x] create mock from captured flow
+- [x] status override
+- [x] response body override
+- [x] latency
+- [x] timeout/drop
+- [x] response mutation
+- [x] request/response breakpoint
+- [x] fixtures
+- [x] “disable all mocks” safety action
 
-### Exit gate
+### Implementation status
 
-The fixture mobile apps can be tested against common failure states without backend changes.
+Implemented and merged to `main` in PR #11. Formal verification is deferred.
 
 ---
 
@@ -103,30 +103,39 @@ The fixture mobile apps can be tested against common failure states without back
 
 ### iOS
 
-- [ ] Swift Package
-- [ ] URLSession integration
-- [ ] manual/custom client instrumentation API
-- [ ] context/log events
-- [ ] sample app
+- [x] Swift Package
+- [x] URLSession integration
+- [x] manual/custom client instrumentation API
+- [x] context/log events
+- [x] source metadata helpers
+- [x] debug-first/no-op release behavior
+- [x] sample app
 
 ### Android
 
-- [ ] Kotlin core
-- [ ] OkHttp interceptor
-- [ ] context/log events
-- [ ] no-op release strategy
-- [ ] sample app
+- [x] Kotlin core
+- [x] OkHttp interceptor
+- [x] manual/custom client instrumentation API
+- [x] context/log events
+- [x] source metadata helpers
+- [x] no-op release strategy
+- [x] sample app
 
 ### Desktop
 
-- [ ] local SDK transport
-- [ ] app/device handshake
-- [ ] proxy↔SDK correlation
-- [ ] source/screen/feature metadata UI
+- [x] versioned local SDK transport
+- [x] app/device handshake and client registry
+- [x] SDK event persistence
+- [x] proxy↔SDK correlation
+- [x] local-only correlation-header stripping
+- [x] session app attribution
+- [x] SDK health/connection diagnostics
+- [x] source/screen/feature/log metadata UI
+- [x] app-context flow search
 
-### Exit gate
+### Implementation status
 
-The same request can show both network data and developer-supplied app context.
+Implementation complete on `phase-4/app-aware-sdk`; integration to `main` remains. Formal verification is deferred.
 
 ---
 
@@ -158,7 +167,7 @@ The same request can show both network data and developer-supplied app context.
 - [ ] session-diff explanation
 - [ ] selected-flow diagnosis
 
-### Exit gate
+### Exit outcome
 
 A developer can explain a meaningful iOS/Android mismatch using deterministic diffing, with AI as an optional enhancement.
 

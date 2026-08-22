@@ -10,6 +10,10 @@
   grid-template-columns: minmax(220px, 1.4fr) minmax(140px, .8fr) 110px 110px 110px;
 }
 
+.sdk-aware-filters {
+  grid-template-columns: minmax(190px, 1.1fr) minmax(190px, 1.1fr) minmax(135px, .8fr) 100px 100px 100px;
+}
+
 .traffic-filters .text-input {
   margin-top: 0;
   min-width: 0;
@@ -190,16 +194,22 @@
   .traffic-filters-advanced {
     grid-template-columns: minmax(200px, 1fr) minmax(140px, .8fr) repeat(3, 100px);
   }
+
+  .sdk-aware-filters {
+    grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) repeat(4, 96px);
+  }
 }
 
 @media (max-width: 1120px) {
   .traffic-filters,
-  .traffic-filters-advanced {
+  .traffic-filters-advanced,
+  .sdk-aware-filters {
     grid-template-columns: 1fr 110px;
   }
 
   .traffic-filters-advanced input,
-  .traffic-filters-advanced select:nth-child(2) {
+  .traffic-filters-advanced select:nth-child(2),
+  .sdk-aware-filters input {
     grid-column: 1 / -1;
   }
 

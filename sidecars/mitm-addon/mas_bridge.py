@@ -12,6 +12,7 @@ SESSION_ID = os.environ.get("MAS_SESSION_ID")
 MAX_BODY_BYTES = int(os.environ.get("MAS_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
 BREAKPOINT_TIMEOUT_MS = int(os.environ.get("MAS_BREAKPOINT_TIMEOUT_MS", "60000"))
 BREAKPOINT_POLL_MS = max(25, int(os.environ.get("MAS_BREAKPOINT_POLL_MS", "100")))
+SDK_CORRELATION_HEADER = "X-Mobile-API-Studio-Request-Id"
 _RULES_MTIME_NS: int | None = None
 _RULES_DOCUMENT: dict = {"enabled": True, "rules": []}
 
@@ -181,6 +182,26 @@ def _rule_by_id(rule_id: str | None) -> dict | None:
     return None
 
 
+def _capture_sdk_request_id(flow: http.HTTPFlow) -> None:
+    request_id = flow.request.headers.get(SDK_CORRELATION_HEADER)
+    if not request_id:
+        return
+    normalized = str(request_id).strip()
+    if not normalized:
+        return
+    flow.metadata["mas_sdk_request_id"] = normalized
+    # Correlation is local debug metadata. Never forward it to the real backend.
+    flow.request.headers.pop(SDK_CORRELATION_HEADER, None)
+
+
+def _captured_request_headers(flow: http.HTTPFlow) -> list[dict]:
+    headers = _headers(flow.request.headers)
+    request_id = flow.metadata.get("mas_sdk_request_id")
+    if request_id:
+        headers.append({"name": SDK_CORRELATION_HEADER, "value": str(request_id)})
+    return headers
+
+
 def _mark_mock(flow: http.HTTPFlow, rule: dict) -> None:
     flow.metadata["mas_mock_rule_id"] = str(rule.get("id") or "")
     flow.metadata["mas_mock_rule_name"] = str(rule.get("name") or "Mock rule")
@@ -300,6 +321,8 @@ def _apply_request_breakpoint_decision(flow: http.HTTPFlow, decision: dict | Non
         _apply_decision_body(flow.request, decision)
     except (ValueError, TypeError) as exc:
         _emit({"type": "mock_rules_failed", "code": "breakpoint_request_body_invalid", "message": str(exc), "rule_id": flow.metadata.get("mas_mock_rule_id")})
+    # A breakpoint edit can reintroduce the local-only SDK header. Capture then strip again.
+    _capture_sdk_request_id(flow)
     return True
 
 
@@ -323,6 +346,7 @@ def _apply_response_breakpoint_decision(flow: http.HTTPFlow, decision: dict | No
 
 
 async def request(flow: http.HTTPFlow) -> None:
+    _capture_sdk_request_id(flow)
     rule = _matching_rule(flow)
     if rule is None:
         return
@@ -458,7 +482,7 @@ async def response(flow: http.HTTPFlow) -> None:
         "port": request.port,
         "path": parsed.path or "/",
         "query": parsed.query or None,
-        "headers": _headers(request.headers),
+        "headers": _captured_request_headers(flow),
         "body": _body(request.raw_content, request_content_type, request.headers.get("content-encoding")),
     }
     response_payload = {
