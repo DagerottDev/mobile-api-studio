@@ -1,9 +1,7 @@
 use super::AppState;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use capture_core::{CapturedBody, CapturedFlow, CaptureEvent};
-use core_model::{
-    AppError, BodyRef, FlowDetail, RequestDetail, ResponseDetail,
-};
+use core_model::{AppError, BodyRef, FlowDetail, RequestDetail, ResponseDetail};
 use serde::Serialize;
 use storage::{BodyStore, Database};
 use tauri::State;
@@ -109,7 +107,7 @@ pub(super) fn ingest_capture_event(
     }
 }
 
-fn persist_captured_flow(
+pub(super) fn persist_captured_flow(
     database: &Database,
     body_store: &BodyStore,
     flow: CapturedFlow,
