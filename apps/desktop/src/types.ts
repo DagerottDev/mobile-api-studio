@@ -37,6 +37,29 @@ export interface DeviceDiscoveryPayload {
   diagnostics: ConnectionDiagnostic[];
 }
 
+export interface ConnectionSnapshot {
+  connected: boolean;
+  sessionId: string | null;
+  deviceId: string | null;
+  strategy: string | null;
+  proxyHost: string | null;
+  proxyPort: number | null;
+}
+
+export interface ConnectDeviceResult {
+  connection: ConnectionSnapshot;
+  diagnostics: ConnectionDiagnostic[];
+}
+
+export interface RollbackJournal {
+  schemaVersion: number;
+  deviceId: string;
+  platform: DevicePlatform;
+  sessionId: string;
+  previousAndroidProxy: string | null;
+  iosCaInstalled: boolean;
+}
+
 export interface CaptureSession {
   schemaVersion: number;
   id: string;
