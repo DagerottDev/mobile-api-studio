@@ -20,6 +20,7 @@ capture-mitm = { path = "../../../crates/capture-mitm" }
 core-model = { path = "../../../crates/core-model" }
 device-android = { path = "../../../crates/device-android" }
 device-ios = { path = "../../../crates/device-ios" }
+replay = { path = "../../../crates/replay" }
 serde.workspace = true
 serde_json.workspace = true
 storage = { path = "../../../crates/storage" }
