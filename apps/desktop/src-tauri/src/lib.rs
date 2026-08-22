@@ -1,3 +1,5 @@
+mod inspect;
+
 use capture_core::{CaptureConfig, CaptureEngine, CaptureEvent, CaptureHandle};
 use capture_mitm::MitmDumpEngine;
 use core_model::{
@@ -15,14 +17,17 @@ use std::{
 };
 use storage::{BodyStore, Database};
 use tauri::{Manager, State};
-use tokio::{sync::Mutex, time::{sleep, Duration}};
+use tokio::{
+    sync::Mutex,
+    time::{sleep, Duration},
+};
 
 const DEFAULT_CAPTURE_PORT: u16 = 8181;
 const ANDROID_HOST_ALIAS: &str = "10.0.2.2";
 
 struct AppState {
     database: Database,
-    _body_store: BodyStore,
+    body_store: BodyStore,
     capture_engine: Arc<MitmDumpEngine>,
     active_connection: Mutex<Option<ActiveConnection>>,
     rollback_path: PathBuf,
@@ -502,28 +507,13 @@ fn clear_rollback_journal(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn ingest_capture_event(database: &Database, event: CaptureEvent) -> Result<(), AppError> {
-    match event {
-        CaptureEvent::FlowStarted(flow)
-        | CaptureEvent::FlowUpdated(flow)
-        | CaptureEvent::FlowCompleted(flow) => database
-            .upsert_flow(&flow)
-            .map_err(|error| AppError::storage(error.to_string())),
-        CaptureEvent::FlowFailed { .. }
-        | CaptureEvent::LifecycleChanged(_)
-        | CaptureEvent::EngineReady(_)
-        | CaptureEvent::EngineFailed { .. }
-        | CaptureEvent::EngineStopped => Ok(()),
-    }
-}
-
-fn spawn_capture_ingestion(database: Database, engine: Arc<MitmDumpEngine>) {
+fn spawn_capture_ingestion(database: Database, body_store: BodyStore, engine: Arc<MitmDumpEngine>) {
     let mut receiver = engine.subscribe();
     tauri::async_runtime::spawn(async move {
         loop {
             match receiver.recv().await {
                 Ok(event) => {
-                    let _ = ingest_capture_event(&database, event);
+                    let _ = inspect::ingest_capture_event(&database, &body_store, event);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -543,7 +533,7 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
 
     Ok(AppState {
         database,
-        _body_store: body_store,
+        body_store,
         capture_engine,
         active_connection: Mutex::new(None),
         rollback_path: app_data_dir.join("connection-rollback.json"),
@@ -609,7 +599,11 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             let addon_path = resolve_addon_path(app).map_err(std::io::Error::other)?;
             let state = initialize_state(app_data_dir, addon_path).map_err(std::io::Error::other)?;
-            spawn_capture_ingestion(state.database.clone(), state.capture_engine.clone());
+            spawn_capture_ingestion(
+                state.database.clone(),
+                state.body_store.clone(),
+                state.capture_engine.clone(),
+            );
             app.manage(state);
             Ok(())
         })
@@ -623,6 +617,9 @@ pub fn run() {
             disconnect_device,
             pending_rollback,
             recover_pending_rollback,
+            inspect::get_flow_detail,
+            inspect::read_body,
+            inspect::export_curl,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mobile API Studio");
