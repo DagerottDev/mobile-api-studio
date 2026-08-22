@@ -5,6 +5,7 @@ import "./styles.css";
 import "./connection.css";
 import "./traffic.css";
 import "./replay.css";
+import "./mocks.css";
 import "./workspace.css";
 import "./settings.css";
 
