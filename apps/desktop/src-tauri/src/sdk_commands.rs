@@ -164,6 +164,15 @@ pub fn sdk_enrichment_for_flow(
         .map_err(sdk_storage_error)?
         .flatten();
 
+    if let (Some(session_id), Some(client)) = (detail.summary.session_id.as_deref(), client.as_ref()) {
+        let _ = state.database.attribute_session_from_request_header(
+            SDK_CORRELATION_HEADER,
+            request_id_value,
+            &client.app_id,
+        );
+        let _ = session_id;
+    }
+
     let around_ms = detail.summary.started_at.parse::<u128>().unwrap_or_default();
     let nearby_events = match client_id.as_deref() {
         Some(id) if around_ms > 0 => state
@@ -185,12 +194,26 @@ pub(super) fn spawn_sdk_ingestion(
     database: sdk_storage::SdkDatabase,
     server: std::sync::Arc<sdk_transport::SdkIngestionServer>,
 ) {
+    let session_database = storage::Database::open(database.path()).ok();
     let mut receiver = server.subscribe();
     tauri::async_runtime::spawn(async move {
         loop {
             match receiver.recv().await {
                 Ok(envelope) => {
-                    let _ = database.record(&envelope);
+                    if database.record(&envelope).is_ok() {
+                        if let (Some(request_id), Some(session_database)) = (
+                            envelope.event.request_id(),
+                            session_database.as_ref(),
+                        ) {
+                            if let Ok(Some(client)) = database.get_client(envelope.event.client_id()) {
+                                let _ = session_database.attribute_session_from_request_header(
+                                    SDK_CORRELATION_HEADER,
+                                    request_id,
+                                    &client.app_id,
+                                );
+                            }
+                        }
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
