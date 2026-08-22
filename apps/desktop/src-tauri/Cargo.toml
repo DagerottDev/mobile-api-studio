@@ -14,6 +14,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+ai-core = { path = "../../../crates/ai-core" }
+ai-storage = { path = "../../../crates/ai-storage" }
 base64.workspace = true
 capture-core = { path = "../../../crates/capture-core" }
 capture-mitm = { path = "../../../crates/capture-mitm" }
