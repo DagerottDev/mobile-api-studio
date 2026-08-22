@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { MockFixture, MockRule } from "../mockTypes";
 import type {
   BodyPayload,
   BodyRef,
@@ -34,6 +35,8 @@ export function TrafficView() {
   const [curlPreview, setCurlPreview] = useState<string | null>(null);
   const [curlCopied, setCurlCopied] = useState(false);
   const [saveState, setSaveState] = useState("Save to collection");
+  const [mockState, setMockState] = useState("Create mock");
+  const [fixtureState, setFixtureState] = useState("Save fixture");
 
   const refreshMetadata = useCallback(async () => {
     try {
@@ -102,6 +105,8 @@ export function TrafficView() {
         setCurlPreview(null);
         setCurlCopied(false);
         setSaveState("Save to collection");
+        setMockState("Create mock");
+        setFixtureState("Save fixture");
 
         const [request, response] = await Promise.all([
           loadBody(nextDetail?.request?.body ?? null),
@@ -136,6 +141,33 @@ export function TrafficView() {
       }
       setError(null);
     } catch (value) {
+      setError(formatInvokeError(value));
+    }
+  }
+
+  async function createMock() {
+    if (!selectedFlowId || !detail?.response) return;
+    try {
+      const rule = await invoke<MockRule>("create_mock_from_flow", { flowId: selectedFlowId });
+      setMockState(`Mock active: ${rule.name}`);
+      setError(null);
+    } catch (value) {
+      setMockState("Create mock failed");
+      setError(formatInvokeError(value));
+    }
+  }
+
+  async function createFixture() {
+    if (!selectedFlowId || !detail?.response) return;
+    try {
+      const fixture = await invoke<MockFixture>("create_fixture_from_flow", {
+        flowId: selectedFlowId,
+        name: null,
+      });
+      setFixtureState(`Fixture saved: ${fixture.name}`);
+      setError(null);
+    } catch (value) {
+      setFixtureState("Save fixture failed");
       setError(formatInvokeError(value));
     }
   }
@@ -201,7 +233,7 @@ export function TrafficView() {
       <div className="inspector panel">
         <div className="panel-heading inspector-heading">
           <div><strong>Inspector</strong><span>{detail?.request?.url ?? "Select a captured flow"}</span></div>
-          {detail?.request ? <div className="inspector-actions"><button className="secondary compact" onClick={() => void copyCurl()}>{curlCopied ? "Copied cURL" : "Copy safe cURL"}</button></div> : null}
+          {detail?.request ? <div className="inspector-actions"><button className="secondary compact" onClick={() => void copyCurl()}>{curlCopied ? "Copied cURL" : "Copy safe cURL"}</button>{detail.response ? <><button className="secondary compact" onClick={() => void createFixture()}>{fixtureState}</button><button className="primary compact" onClick={() => void createMock()}>{mockState}</button></> : null}</div> : null}
         </div>
 
         {detail ? (

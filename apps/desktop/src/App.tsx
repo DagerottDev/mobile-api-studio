@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useState } from "react";
 import { ConnectView } from "./components/ConnectView";
+import { MocksView } from "./components/MocksView";
+import { MockUtilitiesView } from "./components/MockUtilitiesView";
 import { ReplayView } from "./components/ReplayView";
 import { SettingsView } from "./components/SettingsView";
 import { SidecarSettingsPanel } from "./components/SidecarSettingsPanel";
@@ -8,9 +10,9 @@ import { TrafficView } from "./components/TrafficView";
 import { WorkspaceView } from "./components/WorkspaceView";
 import type { CaptureSession } from "./types";
 
-type Route = "Connect" | "Traffic" | "Replay" | "Workspace" | "Settings";
+type Route = "Connect" | "Traffic" | "Replay" | "Mocks" | "Workspace" | "Settings";
 
-const routes: Route[] = ["Connect", "Traffic", "Replay", "Workspace", "Settings"];
+const routes: Route[] = ["Connect", "Traffic", "Replay", "Mocks", "Workspace", "Settings"];
 
 function App() {
   const [route, setRoute] = useState<Route>("Connect");
@@ -86,9 +88,11 @@ function App() {
                   ? "Search and inspect traffic across capture sessions"
                   : route === "Replay"
                     ? "Edit and resend captured or saved requests"
-                    : route === "Workspace"
-                      ? "Manage sessions, saved requests, and environments"
-                      : "Connection Doctor, onboarding, backup, restore, and capture setup"}
+                    : route === "Mocks"
+                      ? "Override responses, reuse fixtures, and pause live mobile API calls"
+                      : route === "Workspace"
+                        ? "Manage sessions, saved requests, and environments"
+                        : "Connection Doctor, onboarding, backup, restore, and capture setup"}
             </p>
           </div>
         </header>
@@ -96,6 +100,7 @@ function App() {
         {route === "Connect" ? <ConnectView /> : null}
         {route === "Traffic" ? <TrafficView /> : null}
         {route === "Replay" ? <ReplayView savedRequestId={replaySavedRequestId} /> : null}
+        {route === "Mocks" ? <div className="mocks-page-stack"><MocksView /><MockUtilitiesView /></div> : null}
         {route === "Workspace" ? <WorkspaceView onOpenReplay={openSavedRequest} /> : null}
         {route === "Settings" ? (
           <>

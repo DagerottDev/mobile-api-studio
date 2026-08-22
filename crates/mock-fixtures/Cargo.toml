@@ -1,0 +1,12 @@
+[package]
+name = "mock-fixtures"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mock-core = { path = "../mock-core" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true

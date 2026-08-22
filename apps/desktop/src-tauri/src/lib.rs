@@ -1,4 +1,7 @@
+mod breakpoint_commands;
+mod fixture_commands;
 mod inspect;
+mod mock_commands;
 mod replay_commands;
 mod settings_commands;
 mod sidecar_commands;
@@ -652,6 +655,21 @@ pub fn run() {
             settings_commands::import_workspace,
             sidecar_commands::capture_executable_setting,
             sidecar_commands::set_capture_executable,
+            mock_commands::list_mock_rules,
+            mock_commands::upsert_mock_rule,
+            mock_commands::create_mock_from_flow,
+            mock_commands::set_mock_rule_enabled,
+            mock_commands::set_mock_rule_priority,
+            mock_commands::delete_mock_rule,
+            mock_commands::disable_all_mocks,
+            fixture_commands::list_mock_fixtures,
+            fixture_commands::upsert_mock_fixture,
+            fixture_commands::delete_mock_fixture,
+            fixture_commands::create_fixture_from_flow,
+            fixture_commands::apply_fixture_to_mock,
+            breakpoint_commands::list_pending_breakpoints,
+            breakpoint_commands::resolve_breakpoint,
+            breakpoint_commands::clear_stale_breakpoints,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mobile API Studio");
