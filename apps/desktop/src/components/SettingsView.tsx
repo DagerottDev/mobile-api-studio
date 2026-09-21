@@ -85,17 +85,19 @@ export function SettingsView() {
   async function exportBundle() {
     setBusy(true);
     try {
-      const bundle = await invoke<PortableWorkspaceBundle>("export_workspace");
+      const result = await invoke<{ bundle: PortableWorkspaceBundle; path: string }>(
+        "export_workspace_to_download",
+      );
+      const bundle = result.bundle;
       const json = JSON.stringify(bundle, null, 2);
       setBundleText(json);
-      downloadJson(json, `mobile-api-studio-workspace-${dateStamp()}.mas.json`);
       await invoke<OnboardingStep>("set_onboarding_step", {
         key: "export_recovery_bundle",
         completed: true,
       });
       await refreshSteps();
       setMessage(
-        `Exported ${bundle.sessions.length} sessions, ${bundle.collections.length} collections, and ${bundle.environments.length} environments.`,
+        `Exported ${bundle.sessions.length} sessions, ${bundle.collections.length} collections, and ${bundle.environments.length} environments to ${result.path}.`,
       );
       setError(null);
     } catch (value) {
@@ -291,20 +293,6 @@ export function SettingsView() {
       </div>
     </section>
   );
-}
-
-function downloadJson(content: string, filename: string) {
-  const blob = new Blob([content], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
-}
-
-function dateStamp() {
-  return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 function formatInvokeError(value: unknown) {

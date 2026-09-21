@@ -48,6 +48,7 @@ pub struct EnvironmentInput {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentVariableInput {
+    pub id: Option<String>,
     pub environment_id: String,
     pub key: String,
     pub value: Option<String>,
@@ -320,7 +321,16 @@ pub fn upsert_environment_variable(
         ));
     }
 
-    let id = environment_variable_id(&input.environment_id, key);
+    let existing = state
+        .database
+        .list_environment_variables(&input.environment_id)
+        .map_err(storage_error)?
+        .into_iter()
+        .find(|variable| input.id.as_deref() == Some(variable.id.as_str()));
+    let id = existing
+        .as_ref()
+        .map(|variable| variable.id.clone())
+        .unwrap_or_else(|| environment_variable_id(&input.environment_id, key));
     let secret_ref = input
         .is_secret
         .then(|| secret_reference(&input.environment_id, key));
@@ -339,6 +349,30 @@ pub fn upsert_environment_variable(
             secret_store
                 .set(secret_ref.as_deref().expect("secret ref exists"), value)
                 .map_err(secret_error)?;
+            if let (Some(previous), Some(next_ref)) = (existing.as_ref(), secret_ref.as_deref()) {
+                if let Some(previous_ref) = previous.secret_ref.as_deref() {
+                    if previous_ref != next_ref {
+                        let _ = secret_store.delete(previous_ref);
+                    }
+                }
+            }
+        } else if let (Some(previous), Some(next_ref)) = (existing.as_ref(), secret_ref.as_deref()) {
+            if let Some(previous_ref) = previous.secret_ref.as_deref() {
+                if previous_ref != next_ref {
+                    let previous_value = secret_store
+                        .get(previous_ref)
+                        .map_err(secret_error)?
+                        .ok_or_else(|| {
+                            AppError::new(
+                                "secret_value_missing",
+                                format!("Secret variable '{}' has no value in secure storage.", previous.key),
+                                true,
+                            )
+                        })?;
+                    secret_store.set(next_ref, &previous_value).map_err(secret_error)?;
+                    let _ = secret_store.delete(previous_ref);
+                }
+            }
         }
     } else if let Some(previous) = state
         .database

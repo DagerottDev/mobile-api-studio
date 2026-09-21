@@ -611,6 +611,7 @@ pub fn run() {
             settings_commands::list_onboarding_steps,
             settings_commands::set_onboarding_step,
             settings_commands::export_workspace,
+            settings_commands::export_workspace_to_download,
             settings_commands::import_workspace,
             sidecar_commands::capture_executable_setting,
             sidecar_commands::set_capture_executable,

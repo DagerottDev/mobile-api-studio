@@ -338,18 +338,18 @@ function EnvironmentsPanel() {
     if (!selectedId) return;
     const next = { ...variable, ...patch };
     try {
-      await invoke("upsert_environment_variable", { input: { environmentId: selectedId, key: next.key, value: next.isSecret ? (secretValue ?? null) : next.value, isSecret: next.isSecret, enabled: next.enabled, sortOrder: next.sortOrder } });
+      await invoke("upsert_environment_variable", { input: { id: variable.id, environmentId: selectedId, key: next.key, value: next.isSecret ? (secretValue ?? null) : (secretValue ?? next.value ?? ""), isSecret: next.isSecret, enabled: next.enabled, sortOrder: next.sortOrder } });
       await loadSnapshot();
     } catch (value) { setError(formatInvokeError(value)); }
   }
 
   async function deleteVariable(variable: EnvironmentVariable) {
-    try { await invoke("delete_environment_variable", { id: variable.id }); await loadSnapshot(); } catch (value) { setError(formatInvokeError(value)); }
+    try { await invoke("delete_environment_variable", { id: variable.id, environmentId: variable.environmentId }); await loadSnapshot(); } catch (value) { setError(formatInvokeError(value)); }
   }
 
   async function runPreview() {
     try {
-      const result = await invoke<{ value: string; usedSecret: boolean; missingVariables: string[] }>("interpolate_with_active_environment", { value: preview });
+      const result = await invoke<{ value: string; usedSecret: boolean; missingVariables: string[] }>("interpolate_with_active_environment", { template: preview });
       setPreviewResult(`${result.value}${result.usedSecret ? " · includes Keychain secret" : ""}${result.missingVariables.length ? ` · missing: ${result.missingVariables.join(", ")}` : ""}`);
     } catch (value) { setError(formatInvokeError(value)); }
   }

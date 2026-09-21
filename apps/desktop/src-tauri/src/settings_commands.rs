@@ -9,7 +9,8 @@ use device_android::AndroidDeviceProvider;
 use device_ios::IosDeviceProvider;
 use secret_store::SecretStore;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use std::fs;
+use tauri::{Manager, State};
 use workspace_core::{ConnectionDoctorReport, DoctorCheck, DoctorStatus};
 
 const PORTABLE_BUNDLE_VERSION: u16 = 2;
@@ -59,6 +60,13 @@ pub struct ImportSummary {
     pub environments: usize,
     pub variables: usize,
     pub secret_values_omitted: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceExportResult {
+    pub bundle: PortableWorkspaceBundle,
+    pub path: String,
 }
 
 #[tauri::command]
@@ -307,6 +315,49 @@ pub fn export_workspace(
         saved_requests,
         environments,
         environment_variables,
+    })
+}
+
+#[tauri::command]
+pub fn export_workspace_to_download(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<WorkspaceExportResult, AppError> {
+    let bundle = export_workspace(state)?;
+    let bytes = serde_json::to_vec_pretty(&bundle)
+        .map_err(|error| {
+            AppError::new(
+                "workspace_export_serialize_failed",
+                error.to_string(),
+                true,
+            )
+        })?;
+    let download_dir = app
+        .path()
+        .download_dir()
+        .map_err(|error| {
+            AppError::new("workspace_export_path_failed", error.to_string(), true)
+        })?;
+    fs::create_dir_all(&download_dir)
+        .map_err(|error| {
+            AppError::new(
+                "workspace_export_directory_failed",
+                error.to_string(),
+                true,
+            )
+        })?;
+    let path = download_dir.join(format!(
+        "mobile-api-studio-workspace-{}.mas.json",
+        bundle.exported_at
+    ));
+    fs::write(&path, bytes)
+        .map_err(|error| {
+            AppError::new("workspace_export_write_failed", error.to_string(), true)
+        })?;
+
+    Ok(WorkspaceExportResult {
+        bundle,
+        path: path.to_string_lossy().into_owned(),
     })
 }
 
