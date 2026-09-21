@@ -343,7 +343,7 @@ impl Database {
         Ok(count == 0)
     }
 
-    pub(super) fn connection(&self) -> Result<Connection, StorageError> {
+    pub(crate) fn connection(&self) -> Result<Connection, StorageError> {
         let connection = Connection::open(&self.path)?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
         Ok(connection)
@@ -444,7 +444,7 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-pub(super) fn flow_source_to_str(source: &FlowSource) -> &'static str {
+pub(crate) fn flow_source_to_str(source: &FlowSource) -> &'static str {
     match source {
         FlowSource::Proxy => "proxy",
         FlowSource::Replay => "replay",
@@ -454,7 +454,7 @@ pub(super) fn flow_source_to_str(source: &FlowSource) -> &'static str {
     }
 }
 
-pub(super) fn flow_source_from_str(value: &str) -> FlowSource {
+pub(crate) fn flow_source_from_str(value: &str) -> FlowSource {
     match value {
         "proxy" => FlowSource::Proxy,
         "replay" => FlowSource::Replay,
@@ -464,7 +464,7 @@ pub(super) fn flow_source_from_str(value: &str) -> FlowSource {
     }
 }
 
-pub(super) fn session_status_to_str(status: &SessionStatus) -> &'static str {
+pub(crate) fn session_status_to_str(status: &SessionStatus) -> &'static str {
     match status {
         SessionStatus::Active => "active",
         SessionStatus::Completed => "completed",
@@ -473,7 +473,7 @@ pub(super) fn session_status_to_str(status: &SessionStatus) -> &'static str {
     }
 }
 
-pub(super) fn session_status_from_str(value: &str) -> SessionStatus {
+pub(crate) fn session_status_from_str(value: &str) -> SessionStatus {
     match value {
         "completed" => SessionStatus::Completed,
         "interrupted" => SessionStatus::Interrupted,

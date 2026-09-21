@@ -25,6 +25,7 @@
   },
   "bundle": {
     "active": false,
+    "icon": ["icons/icon.png"],
     "resources": [
       "../../../sidecars/mitm-addon/mas_bridge.py"
     ]
