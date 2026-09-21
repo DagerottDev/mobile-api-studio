@@ -116,7 +116,7 @@ export function SdkView() {
 
 function SdkEventRow({ event }: { event: SdkEnvelope }) {
   const context = contextForEnvelope(event);
-  let title = event.event.type;
+  let title: string = event.event.type;
   let detail = "";
   if (event.event.type === "network") {
     title = `${event.event.payload.phase} · ${event.event.payload.method}`;

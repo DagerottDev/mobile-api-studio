@@ -1,0 +1,7 @@
+Target dependency graph (3 targets)
+Target 'AllExcludingTests' in project 'Aggregate'
+➜ Explicit dependency on target 'MobileAPIStudio-product' in project 'MobileAPIStudio'
+➜ Explicit dependency on target 'MobileAPIStudio' in project 'MobileAPIStudio'
+Target 'MobileAPIStudio-product' in project 'MobileAPIStudio'
+➜ Explicit dependency on target 'MobileAPIStudio' in project 'MobileAPIStudio'
+Target 'MobileAPIStudio' in project 'MobileAPIStudio' (no dependencies)

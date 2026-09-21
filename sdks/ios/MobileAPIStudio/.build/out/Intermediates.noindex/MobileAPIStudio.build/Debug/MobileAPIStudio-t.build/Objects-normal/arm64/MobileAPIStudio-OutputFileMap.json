@@ -1,0 +1,49 @@
+{
+  "" : {
+    "diagnostics" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio-primary.dia",
+    "emit-module-dependencies" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio-primary-emit-module.dia",
+    "pch" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio-primary.swiftdeps"
+  },
+  "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/Sources/MobileAPIStudio/MobileAPIStudio.swift" : {
+    "const-values" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio.swiftconstvalues",
+    "dependencies" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio.d",
+    "diagnostics" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio.dia",
+    "index-unit-output-path" : "/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio.o",
+    "llvm-bc" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio.bc",
+    "object" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio.o",
+    "swift-dependencies" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio.swiftdeps",
+    "swiftmodule" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/MobileAPIStudio~partial.swiftmodule"
+  },
+  "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/Sources/MobileAPIStudio/Models.swift" : {
+    "const-values" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Models.swiftconstvalues",
+    "dependencies" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Models.d",
+    "diagnostics" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Models.dia",
+    "index-unit-output-path" : "/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Models.o",
+    "llvm-bc" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Models.bc",
+    "object" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Models.o",
+    "swift-dependencies" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Models.swiftdeps",
+    "swiftmodule" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Models~partial.swiftmodule"
+  },
+  "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/Sources/MobileAPIStudio/Transport.swift" : {
+    "const-values" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Transport.swiftconstvalues",
+    "dependencies" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Transport.d",
+    "diagnostics" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Transport.dia",
+    "index-unit-output-path" : "/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Transport.o",
+    "llvm-bc" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Transport.bc",
+    "object" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Transport.o",
+    "swift-dependencies" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Transport.swiftdeps",
+    "swiftmodule" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/Transport~partial.swiftmodule"
+  },
+  "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/Sources/MobileAPIStudio/URLSessionInstrumentation.swift" : {
+    "const-values" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/URLSessionInstrumentation.swiftconstvalues",
+    "dependencies" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/URLSessionInstrumentation.d",
+    "diagnostics" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/URLSessionInstrumentation.dia",
+    "index-unit-output-path" : "/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/URLSessionInstrumentation.o",
+    "llvm-bc" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/URLSessionInstrumentation.bc",
+    "object" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/URLSessionInstrumentation.o",
+    "swift-dependencies" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/URLSessionInstrumentation.swiftdeps",
+    "swiftmodule" : "/Users/rsharma3/Documents/Github_Personal/Mobile API Studio/sdks/ios/MobileAPIStudio/.build/out/Intermediates.noindex/MobileAPIStudio.build/Debug/MobileAPIStudio-t.build/Objects-normal/arm64/URLSessionInstrumentation~partial.swiftmodule"
+  }
+}

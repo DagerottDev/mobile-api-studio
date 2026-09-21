@@ -1,0 +1,4 @@
+module MobileAPIStudio {
+header "MobileAPIStudio-Swift.h"
+export *
+}

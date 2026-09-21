@@ -2,7 +2,7 @@ import Foundation
 
 public final class MobileAPIStudioURLProtocol: URLProtocol, @unchecked Sendable {
     private static let handledKey = "dev.mobileapistudio.urlprotocol.handled"
-    private var task: URLSessionDataTask?
+    private var dataTask: URLSessionDataTask?
     private var requestID: String?
 
     public override class func canInit(with request: URLRequest) -> Bool {
@@ -41,7 +41,7 @@ public final class MobileAPIStudioURLProtocol: URLProtocol, @unchecked Sendable 
             $0 != MobileAPIStudioURLProtocol.self
         }
         let session = URLSession(configuration: configuration)
-        task = session.dataTask(with: forwarded) { [weak self] data, response, error in
+        dataTask = session.dataTask(with: forwarded) { [weak self] data, response, error in
             guard let self else { return }
             if let requestID = self.requestID {
                 MobileAPIStudio.complete(requestID: requestID, response: response, error: error)
@@ -58,11 +58,11 @@ public final class MobileAPIStudioURLProtocol: URLProtocol, @unchecked Sendable 
             }
             self.client?.urlProtocolDidFinishLoading(self)
         }
-        task?.resume()
+        dataTask?.resume()
     }
 
     public override func stopLoading() {
-        task?.cancel()
-        task = nil
+        dataTask?.cancel()
+        dataTask = nil
     }
 }
