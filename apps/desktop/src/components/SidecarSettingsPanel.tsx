@@ -62,7 +62,7 @@ export function SidecarSettingsPanel() {
       <div className="panel-heading">
         <div>
           <strong>Capture sidecar</strong>
-          <span>Use PATH auto-discovery or point Mobile API Studio at a managed mitmdump executable</span>
+          <span>Use automatic discovery or point Mobile API Studio at a managed mitmdump executable</span>
         </div>
         <span className="pill">restart to apply</span>
       </div>
@@ -71,7 +71,7 @@ export function SidecarSettingsPanel() {
       <div className="privacy-note">
         <strong>Current startup strategy:</strong>{" "}
         {setting?.usesAutoDiscovery
-          ? "automatic `mitmdump` discovery through PATH"
+          ? "automatic `mitmdump` discovery through PATH or standard macOS install locations"
           : setting?.effectiveAfterRestart ?? "custom executable"}.
         A custom path can target a centrally managed or future bundled sidecar without changing capture code.
       </div>

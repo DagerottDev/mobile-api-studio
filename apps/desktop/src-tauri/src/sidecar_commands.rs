@@ -1,6 +1,7 @@
 use super::AppState;
 use core_model::{AppError, AppPreference};
 use serde::Serialize;
+use std::{env, path::Path};
 use tauri::State;
 
 pub const CAPTURE_EXECUTABLE_PREFERENCE: &str = "capture_executable";
@@ -27,7 +28,7 @@ pub fn capture_executable_setting(
     Ok(CaptureExecutableSetting {
         effective_after_restart: configured
             .clone()
-            .unwrap_or_else(|| "mitmdump (PATH auto-discovery)".into()),
+            .unwrap_or_else(|| "mitmdump (automatic discovery)".into()),
         uses_auto_discovery: configured.is_none(),
         configured,
     })
@@ -53,7 +54,7 @@ pub fn set_capture_executable(
     Ok(CaptureExecutableSetting {
         effective_after_restart: normalized
             .clone()
-            .unwrap_or_else(|| "mitmdump (PATH auto-discovery)".into()),
+            .unwrap_or_else(|| "mitmdump (automatic discovery)".into()),
         uses_auto_discovery: normalized.is_none(),
         configured: normalized,
     })
@@ -67,8 +68,24 @@ pub fn configured_capture_executable(database: &storage::Database) -> Result<Str
             preference
                 .map(|value| value.value)
                 .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| "mitmdump".into())
+                .unwrap_or_else(discover_capture_executable)
         })
+}
+
+fn discover_capture_executable() -> String {
+    if env::var_os("PATH").is_some_and(|paths| {
+        env::split_paths(&paths).any(|directory| directory.join("mitmdump").is_file())
+    }) {
+        return "mitmdump".into();
+    }
+
+    for candidate in ["/opt/homebrew/bin/mitmdump", "/usr/local/bin/mitmdump"] {
+        if Path::new(candidate).is_file() {
+            return candidate.into();
+        }
+    }
+
+    "mitmdump".into()
 }
 
 fn storage_error(error: storage::StorageError) -> AppError {

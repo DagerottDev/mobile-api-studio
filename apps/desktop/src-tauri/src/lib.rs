@@ -220,7 +220,8 @@ async fn connect_device(
         ));
     }
 
-    let listen_host = if is_android { "0.0.0.0" } else { "127.0.0.1" };
+    // Android's 10.0.2.2 alias reaches the host loopback interface.
+    let listen_host = "127.0.0.1";
     let strategy = if is_android { "android_adb_global_proxy" } else { "ios_manual_proxy" };
     let handle = state
         .capture_engine
@@ -523,11 +524,20 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
 }
 
 fn resolve_addon_path(app: &tauri::App) -> Result<PathBuf, String> {
-    let development_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../sidecars/mitm-addon/mas_bridge.py");
-    if development_path.is_file() { return Ok(development_path) }
+    #[cfg(debug_assertions)]
+    {
+        let development_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../sidecars/mitm-addon/mas_bridge.py");
+        if development_path.is_file() {
+            return Ok(development_path);
+        }
+    }
     let resource_dir = app.path().resource_dir().map_err(|error| error.to_string())?;
-    Ok(resource_dir.join("sidecars/mitm-addon/mas_bridge.py"))
+    let addon_path = resource_dir.join("sidecars/mitm-addon/mas_bridge.py");
+    if !addon_path.is_file() {
+        return Err(format!("Capture addon not found at {}", addon_path.display()));
+    }
+    Ok(addon_path)
 }
 
 fn capture_error_to_app_error(error: capture_core::CaptureError) -> AppError {
