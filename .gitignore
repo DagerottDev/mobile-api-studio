@@ -5,6 +5,7 @@ dist/
 
 # Rust
 target/
+apps/desktop/src-tauri/gen/
 
 # Python
 __pycache__/
@@ -15,6 +16,7 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+**/xcuserdata/
 
 # Runtime/debugger data
 *.db

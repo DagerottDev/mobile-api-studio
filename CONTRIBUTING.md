@@ -1,6 +1,8 @@
 # Contributing
 
-The repository is currently private. Production changes should still be made on short-lived branches with focused pull requests.
+Contributions to Mobile API Studio are welcome. Build the app using the instructions in [README.md](README.md), then use focused pull requests for changes.
+
+By submitting a contribution, you agree that it may be distributed under this repository's [Apache-2.0 license](LICENSE). Do not include credentials, captured private traffic, certificate keys, or other people's data in issues or pull requests.
 
 ## Project-stage note
 

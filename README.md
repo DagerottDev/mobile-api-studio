@@ -1,123 +1,73 @@
 # Mobile API Studio
 
-A local-first desktop debugger for inspecting, replaying, mocking, correlating, and comparing API traffic from iOS Simulators and Android Emulators.
+**A local-first API debugger for iOS Simulators and Android Emulators.** Capture a request, inspect what happened, replay it, mock its response, and compare two sessions from one macOS desktop app.
 
-> **Status:** implementation Phases 0–5 are complete and merged to `main`. The repository remains private and formal testing/CI/final validation are intentionally deferred to the repository owner.
+[Build from source](#build-from-source) · [How capture works](#how-capture-works) · [Contribute](CONTRIBUTING.md) · [Support the project](#support-the-project)
 
-## What is implemented
+> **Release status:** The planned v0.5 feature set is implemented. An Apple Silicon macOS app has been built and launched, but device workflows and the [final validation checklist](docs/FINAL_VALIDATION.md) are still in progress. There is no notarized public download yet. This repository is available for developers to inspect and build under Apache-2.0.
 
-Mobile API Studio now covers the full planned v0.5 workflow:
+## What you can do
 
-1. Discover booted iOS Simulators and Android Emulators.
-2. Connect a runtime to a local capture session.
-3. Capture and inspect HTTP(S) traffic in a searchable timeline.
-4. Persist sessions, request/response details, and content-addressed bodies locally.
-5. Copy a secret-redacted cURL command or turn a captured request into an editable Replay draft.
-6. Save reusable requests into collections and resolve local environments, including Keychain-backed secrets.
-7. Mock responses, inject latency/errors, reuse fixtures, and pause request/response breakpoints.
-8. Add optional iOS/Android SDK context such as app, screen, feature, source location, and logs.
-9. Compare two sessions deterministically for missing/extra calls, request/response differences, JSON shape drift, retries, errors, and timing regressions.
-10. Optionally ask an AI provider to explain selected, redacted comparison/flow evidence after an explicit context preview.
+| Workflow | In the app |
+| --- | --- |
+| Capture and inspect | Discover local runtimes, capture HTTP(S), search sessions, inspect headers, bodies, timing, and errors. |
+| Replay and organize | Edit captured requests, use collections and environments, and keep secret values in macOS Keychain. |
+| Mock and debug | Return fixtures, inject latency or failures, and pause requests or responses at breakpoints. |
+| Understand app context | Add optional Swift or Kotlin SDK context, including screen, feature, source, and logs. |
+| Compare sessions | Find missing calls, payload and schema changes, retries, errors, and timing differences. |
+| Explain with AI | Preview locally redacted evidence before explicitly sending it to an optional provider. |
 
-The product is intentionally not a generic Postman replacement. Its differentiator is **mobile runtime awareness**: device discovery, capture orchestration, app-aware context, failure simulation, and iOS↔Android comparison.
+Traffic and workspace data stay on your Mac by default. The optional AI flow makes an external request only after you preview the context and choose to send it. See [Security and privacy](docs/SECURITY_AND_PRIVACY.md) for the implemented boundaries and the validation still pending.
 
-## Current stack
+## Build from source
 
-- **Desktop shell:** Tauri 2
-- **UI:** React + TypeScript + Vite
-- **Core/runtime:** Rust + Tokio
-- **Metadata:** SQLite
-- **Body storage:** content-addressed SHA-256 file store
-- **Capture:** mitmproxy/mitmdump sidecar behind the Rust `CaptureEngine` boundary
-- **iOS runtime integration:** `xcrun simctl`
-- **Android runtime integration:** ADB
-- **Replay:** native Rust HTTP client
-- **iOS app-aware SDK:** Swift Package
-- **Android app-aware SDK:** Kotlin library + OkHttp interceptor
-- **AI:** provider-neutral Rust interface with OpenAI Responses API implementation
-- **Secrets:** macOS Keychain through the secure-store abstraction
+The desktop target is **macOS**. This repository was most recently built on Apple Silicon with macOS 27; other macOS versions and Intel builds have not been validated yet.
 
-## Implementation phases
+Install:
 
-| Phase | Version | Status | Outcome |
-|---|---|---|---|
-| 0 | Foundation | ✅ Merged | Tauri/Rust/React foundation, domain models, SQLite/body storage, capture abstractions |
-| 1 | v0.1 | ✅ Merged | Simulator/emulator discovery, capture, inspect, safe cURL, Replay |
-| 2 | v0.2 | ✅ Merged | Sessions, search, collections, environments, import/export, Connection Doctor |
-| 3 | v0.3 | ✅ Merged | Mock rules, fixtures, latency/errors, request/response breakpoints |
-| 4 | v0.4 | ✅ Merged | Swift/Kotlin SDKs, app context, logs, proxy↔SDK correlation |
-| 5 | v0.5 | ✅ Merged | Session comparison, deterministic diagnostics, optional redacted AI debugging |
+- Xcode Command Line Tools and a Rust toolchain compatible with `rust-version = 1.85`;
+- Node.js 20.19+ or 22.12+ and pnpm 10.15.0;
+- `mitmdump` from mitmproxy for capture;
+- Xcode and an iOS Simulator runtime for iOS work, or Android SDK Platform Tools and an Android Emulator for Android work.
 
-Formal validation is a separate owner-led stage and has not been performed as part of these implementation phases.
+Then, from the repository root:
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the phase record and [docs/FINAL_VALIDATION.md](docs/FINAL_VALIDATION.md) for the deferred validation checklist.
-
-## As-built repository layout
-
-```text
-mobile-api-studio/
-├── apps/
-│   └── desktop/
-│       ├── src/                  # React workspaces and UI
-│       └── src-tauri/            # Tauri commands/orchestration
-├── crates/
-│   ├── core-model/               # shared capture/workspace models
-│   ├── capture-core/             # CaptureEngine interface
-│   ├── capture-mitm/             # mitmdump process/event bridge
-│   ├── device-ios/               # simctl integration
-│   ├── device-android/           # ADB/emulator integration
-│   ├── storage/                  # SQLite + body store
-│   ├── replay/                   # native request replay
-│   ├── workspace-core/           # interpolation/diagnostic helpers
-│   ├── secret-store/             # OS credential-store abstraction
-│   ├── mock-core/                # deterministic mock rules
-│   ├── mock-storage/             # mock persistence
-│   ├── mock-fixtures/            # reusable mock fixtures
-│   ├── sdk-protocol/             # versioned app-aware SDK events
-│   ├── sdk-storage/              # SDK event/client persistence
-│   ├── sdk-transport/            # local SDK ingestion server
-│   ├── compare-core/             # deterministic session comparison
-│   ├── ai-core/                  # redaction + provider abstraction
-│   └── ai-storage/               # local AI result history
-├── sidecars/
-│   └── mitm-addon/               # mitmproxy capture/mock/breakpoint bridge
-├── sdks/
-│   ├── ios/                      # Swift Package
-│   └── android/                  # Kotlin/OkHttp library + sample
-├── samples/
-│   └── ios-sdk-demo/             # iOS SDK sample integration
-└── docs/
+```sh
+pnpm install --frozen-lockfile
+pnpm tauri dev
 ```
 
-## Core principles
+To build a local macOS app bundle:
 
-- **Local-first:** capture sessions and debugging data stay on the developer machine by default.
-- **Safe by default:** secret headers, internal correlation metadata, and configured secret keys are redacted from exports and AI context.
-- **Explicit AI boundary:** AI is optional; the user previews the sanitized context before an external request is allowed.
-- **No pinning bypass feature:** pinned clients require an app-owned debug configuration or the optional SDK path.
-- **Reversible mutations:** device/proxy changes are journaled and rolled back where the selected strategy changes them.
-- **Adapter boundaries:** capture, device, replay, mocks, SDK transport, comparison, secure storage, and AI providers remain replaceable components.
-- **Deterministic before AI:** comparisons and diagnostics are computed locally first; AI explains evidence rather than becoming the source of truth.
+```sh
+pnpm tauri build --bundles app
+```
 
-## Documentation
+The bundle appears at `target/release/bundle/macos/Mobile API Studio.app`. It is ad hoc signed for local preview. Read [macOS release preparation](docs/MACOS_RELEASE.md) before distributing a build. `mitmdump` is installed separately; the app packages its Python capture bridge and can discover a standard Homebrew install or use the absolute path set in Settings.
 
-- [Implementation record](docs/IMPLEMENTATION_PLAN.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Roadmap and phase status](docs/ROADMAP.md)
-- [Final owner-led validation](docs/FINAL_VALIDATION.md)
-- [Security and privacy](docs/SECURITY_AND_PRIVACY.md)
-- [SDK integration](docs/SDK_INTEGRATION.md)
-- [AI privacy and providers](docs/AI_PRIVACY_AND_PROVIDERS.md)
-- [Issue backlog / implementation history](docs/ISSUE_BACKLOG.md)
-- [Research notes](docs/RESEARCH_NOTES.md)
-- [ADRs](docs/adr/)
+## How capture works
 
-## Current next step
+1. Boot an iOS Simulator or Android Emulator and open **Connect**.
+2. Run **Connection Doctor**, select the runtime, and start a session.
+3. Follow the runtime's proxy and development CA guidance, then use **Traffic**, **Replay**, **Mocks**, and **Compare**.
 
-The planned product implementation is complete through v0.5. The next project stage is **independent final validation by the repository owner**: build/run the desktop app, exercise supported iOS/Android workflows, record defects, and fix only issues discovered during that validation cycle.
+The iOS Simulator proxy is configured manually. Android Emulator proxy changes are journaled for rollback. Apps with certificate pinning need their own debug configuration; Mobile API Studio does not bypass pinning. Optional [iOS and Android SDKs](docs/SDK_INTEGRATION.md) add app context without requiring production instrumentation.
 
-No automated test or CI program is being introduced automatically as part of this documentation refresh.
+## For contributors
+
+The desktop app uses Tauri 2, React, TypeScript, Rust, SQLite, and mitmproxy. The iOS SDK is a Swift Package; the Android SDK is a Kotlin library with an OkHttp interceptor. Browse the [architecture](docs/ARCHITECTURE.md), [roadmap](docs/ROADMAP.md), and [contribution guide](CONTRIBUTING.md) to find a starting point. Report vulnerabilities through the [security policy](SECURITY.md).
+
+Implementation Phases 0–5 were merged without automated tests or CI as phase gates. `cargo test --workspace` currently compiles the workspace but contains no automated Rust tests. The repository owner controls the separate [final validation](docs/FINAL_VALIDATION.md) and future test strategy; please describe what you actually verified in a pull request.
+
+## Support the project
+
+[![Animated Buy me a coffee card linking to DagerottDev's support page](.github/assets/buy-me-a-coffee.gif)](https://buymeacoffee.com/dagerottdev)
+
+- [Buy Me a Coffee](https://buymeacoffee.com/dagerottdev) — international support.
+- [Buy DagerottDev a Chai on Bondin](https://bondin.io/dagerottdev) — support from India.
+
+Support is optional. Contributions, bug reports, and documentation improvements are welcome too.
 
 ## License
 
-No public license has been selected yet. The repository remains private until that decision and the release/security review are complete.
+Mobile API Studio is licensed under the [Apache License 2.0](LICENSE). Third-party dependencies retain their own licenses.

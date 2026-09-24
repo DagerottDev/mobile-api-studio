@@ -5,17 +5,17 @@ The GitHub repository already exists and the planned implementation through v0.5
 ## Repository
 
 - Name: `mobile-api-studio`
-- Visibility: **Private**
+- Visibility: **Public source release planned**; see the live GitHub repository for the current setting.
 - Default branch: `main`
 - Description: `Local-first API debugger for iOS Simulators and Android Emulators: capture, replay, mock, compare.`
-- License: none selected yet
+- License: Apache-2.0
 
 ## Current state
 
 - Phases 0–5: implemented and merged.
 - Current implementation milestone: v0.5 Compare + AI.
 - Formal tests/CI/final validation: deferred to the repository owner.
-- Public/open-source release: not yet prepared.
+- Public source preparation: README, contribution guide, funding links, and Apache-2.0 licensing are included. macOS binary distribution remains a separate signed/notarized release decision.
 
 ## New-machine development setup
 

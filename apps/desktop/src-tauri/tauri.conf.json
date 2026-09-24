@@ -4,9 +4,9 @@
   "version": "0.0.1",
   "identifier": "dev.mobileapistudio.desktop",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -24,10 +24,13 @@
     }
   },
   "bundle": {
-    "active": false,
+    "active": true,
     "icon": ["icons/icon.png"],
-    "resources": [
-      "../../../sidecars/mitm-addon/mas_bridge.py"
-    ]
+    "macOS": {
+      "signingIdentity": "-"
+    },
+    "resources": {
+      "../../../sidecars/mitm-addon/mas_bridge.py": "sidecars/mitm-addon/mas_bridge.py"
+    }
   }
 }
