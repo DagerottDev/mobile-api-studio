@@ -6,7 +6,7 @@
 }
 
 .mocks-list-pane {
-  border-right: 1px solid var(--border, #242a35);
+  border-right: 1px solid var(--border, var(--line));
   min-width: 0;
 }
 
@@ -16,7 +16,7 @@
   align-items: center;
   gap: 10px;
   padding: 9px 12px;
-  border-bottom: 1px solid var(--border, #242a35);
+  border-bottom: 1px solid var(--border, var(--line));
   background: rgba(235, 92, 92, .045);
   font-size: 12px;
 }
@@ -33,7 +33,7 @@
   gap: 9px;
   align-items: center;
   border: 0;
-  border-bottom: 1px solid var(--border, #242a35);
+  border-bottom: 1px solid var(--border, var(--line));
   background: transparent;
   color: inherit;
   padding: 11px 12px;
@@ -43,7 +43,7 @@
 
 .mock-rule-row:hover,
 .mock-rule-row.selected {
-  background: rgba(255, 255, 255, .045);
+  background: color-mix(in srgb, var(--ink) 4.5%, transparent);
 }
 
 .mock-priority {
@@ -52,7 +52,7 @@
   width: 22px;
   height: 22px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, .06);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
   font-size: 10px;
   opacity: .7;
 }
@@ -125,7 +125,7 @@
 }
 
 .mock-section {
-  border-top: 1px solid var(--border, #303744);
+  border-top: 1px solid var(--border, var(--line));
   padding: 17px 0;
 }
 
@@ -151,9 +151,9 @@
 
 .mock-section select {
   min-height: 36px;
-  border: 1px solid var(--border, #303744);
+  border: 1px solid var(--border, var(--line));
   border-radius: 8px;
-  background: rgba(0, 0, 0, .14);
+  background: color-mix(in srgb, var(--canvas) 14%, transparent);
   color: inherit;
   padding: 0 9px;
 }
@@ -163,9 +163,9 @@
   box-sizing: border-box;
   min-height: 180px;
   resize: vertical;
-  border: 1px solid var(--border, #303744);
+  border: 1px solid var(--border, var(--line));
   border-radius: 9px;
-  background: rgba(0, 0, 0, .16);
+  background: color-mix(in srgb, var(--canvas) 16%, transparent);
   color: inherit;
   padding: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -205,7 +205,7 @@
   display: flex;
   gap: 4px;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border, #242a35);
+  border-bottom: 1px solid var(--border, var(--line));
 }
 
 .mock-utility-grid {
@@ -215,7 +215,7 @@
 }
 
 .mock-utility-list {
-  border-right: 1px solid var(--border, #242a35);
+  border-right: 1px solid var(--border, var(--line));
   min-width: 0;
   overflow: auto;
 }
@@ -232,7 +232,7 @@
   gap: 3px;
   padding: 11px 12px;
   border: 0;
-  border-bottom: 1px solid var(--border, #242a35);
+  border-bottom: 1px solid var(--border, var(--line));
   background: transparent;
   color: inherit;
   text-align: left;
@@ -241,7 +241,7 @@
 
 .mock-utility-row:hover,
 .mock-utility-row.selected {
-  background: rgba(255, 255, 255, .045);
+  background: color-mix(in srgb, var(--ink) 4.5%, transparent);
 }
 
 .mock-utility-row small {
@@ -262,9 +262,9 @@
 .fixture-apply-row select,
 .mock-utility-editor select {
   min-height: 36px;
-  border: 1px solid var(--border, #303744);
+  border: 1px solid var(--border, var(--line));
   border-radius: 8px;
-  background: rgba(0, 0, 0, .14);
+  background: color-mix(in srgb, var(--canvas) 14%, transparent);
   color: inherit;
   padding: 0 9px;
 }
@@ -275,7 +275,7 @@
 }
 
 .breakpoint-rule-settings {
-  border-bottom: 1px solid var(--border, #242a35);
+  border-bottom: 1px solid var(--border, var(--line));
 }
 
 .breakpoint-rule-list {
@@ -290,7 +290,7 @@
   gap: 12px;
   align-items: center;
   padding: 10px 12px;
-  border-top: 1px solid var(--border, #242a35);
+  border-top: 1px solid var(--border, var(--line));
 }
 
 .breakpoint-rule-row > div {
@@ -329,10 +329,10 @@
 
 @media (max-width: 1050px) {
   .mocks-layout { grid-template-columns: 1fr; }
-  .mocks-list-pane { border-right: 0; border-bottom: 1px solid var(--border, #242a35); }
+  .mocks-list-pane { border-right: 0; border-bottom: 1px solid var(--border, var(--line)); }
   .mock-rule-list { max-height: 280px; }
   .mock-grid.three-column { grid-template-columns: 1fr 1fr; }
   .mock-utility-grid { grid-template-columns: 1fr; }
-  .mock-utility-list { border-right: 0; border-bottom: 1px solid var(--border, #242a35); max-height: 280px; }
+  .mock-utility-list { border-right: 0; border-bottom: 1px solid var(--border, var(--line)); max-height: 280px; }
   .breakpoint-rule-row { grid-template-columns: 1fr auto auto; }
 }

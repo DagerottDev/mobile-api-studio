@@ -1,0 +1,15 @@
+[package]
+name = "mobile-api-studio-server"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+app-core = { path = "../../crates/app-core" }
+axum = "0.8.9"
+core-model = { path = "../../crates/core-model" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["io-util", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tower-http = { version = "0.7.1", features = ["fs"] }

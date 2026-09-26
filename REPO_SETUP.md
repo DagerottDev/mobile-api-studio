@@ -5,7 +5,7 @@ The GitHub repository already exists and the planned implementation through v0.5
 ## Repository
 
 - Name: `mobile-api-studio`
-- Visibility: **Public source release planned**; see the live GitHub repository for the current setting.
+- Visibility: public.
 - Default branch: `main`
 - Description: `Local-first API debugger for iOS Simulators and Android Emulators: capture, replay, mock, compare.`
 - License: Apache-2.0
@@ -13,24 +13,23 @@ The GitHub repository already exists and the planned implementation through v0.5
 ## Current state
 
 - Phases 0–5: implemented and merged.
-- Current implementation milestone: v0.5 Compare + AI.
-- Formal tests/CI/final validation: deferred to the repository owner.
+- Current implementation milestone: localhost source-build migration on top of v0.5.
+- Focused local API tests exist; device validation and release approval remain with the repository owner. No CI gate has been added.
 - Public source preparation: README, contribution guide, funding links, and Apache-2.0 licensing are included. macOS binary distribution remains a separate signed/notarized release decision.
 
 ## New-machine development setup
 
-The project is a Tauri + React + Rust monorepo. A development machine should have the platform tooling needed for the workflows it intends to exercise:
+The current source build uses a loopback-only Axum service with a React browser UI. A development machine should have the platform tooling needed for the workflows it intends to exercise:
 
 ```text
 Rust toolchain compatible with workspace rust-version
 Node.js + pnpm
-Tauri desktop prerequisites
 Xcode + Command Line Tools for iOS Simulator workflows
 Android SDK Platform Tools / ADB for Android Emulator workflows
 mitmproxy/mitmdump or the configured capture executable
 ```
 
-The desktop app can also store a custom mitmdump executable path in Settings.
+Run `pnpm install --frozen-lockfile` and `./scripts/run-local.sh` from the repository root. The service opens `http://127.0.0.1:8180`; it can store a custom mitmdump executable path in Settings. Close the historical Tauri app before using the shared data directory.
 
 ## Runtime-specific notes
 
@@ -54,4 +53,4 @@ The desktop app can also store a custom mitmdump executable path in Settings.
 
 ## Next project stage
 
-The next stage is not additional phase implementation. It is the repository owner's independent validation cycle described in [docs/FINAL_VALIDATION.md](docs/FINAL_VALIDATION.md).
+The next stage is the repository owner's independent localhost and device validation cycle described in [docs/FINAL_VALIDATION.md](docs/FINAL_VALIDATION.md).

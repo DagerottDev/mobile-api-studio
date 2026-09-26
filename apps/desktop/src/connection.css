@@ -1,34 +1,34 @@
 .field-label {
   display: block;
   margin-top: 16px;
-  color: #858c9b;
+  color: var(--muted);
   font-size: 12px;
 }
 
 .text-input {
   width: 100%;
   margin-top: 7px;
-  border: 1px solid #343947;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: #0f1217;
-  color: #e8eaf0;
+  background: var(--canvas);
+  color: var(--ink);
   padding: 10px 11px;
   outline: none;
 }
 
 .text-input:focus {
-  border-color: #596273;
+  border-color: var(--muted);
 }
 
 .primary {
   cursor: pointer;
-  background: #e3e6ec;
-  border-color: #e3e6ec;
-  color: #15181e;
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--accent-ink);
 }
 
 .primary:hover:not(:disabled) {
-  background: #ffffff;
+  background: var(--ink);
 }
 
 .primary:disabled,
@@ -44,7 +44,7 @@
 }
 
 .error-banner strong {
-  color: #ffd0d0;
+  color: var(--danger);
 }
 
 .error-banner .secondary {
@@ -54,6 +54,6 @@
 .selected-device-detail > small {
   display: block;
   margin-top: 9px;
-  color: #7f8795;
+  color: var(--muted);
   line-height: 1.45;
 }

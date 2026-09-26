@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../api/invoke";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AiContextPreview, AiGenerationResult, AiResultRecord, AiSettingsSnapshot } from "../aiTypes";
 import type { CaptureSession, TrafficSearchResult } from "../types";
@@ -97,7 +97,7 @@ export function AiView() {
       setError(null);
     } catch (value) {
       setError(formatInvokeError(value));
-      if (String(value).includes("ai_context_changed")) setPreview(null);
+      if (value && typeof value === "object" && "code" in value && value.code === "ai_context_changed") setPreview(null);
     } finally {
       setBusy(false);
     }

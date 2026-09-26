@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../api/invoke";
 import { useEffect, useState } from "react";
 import type { AiSettingsSnapshot } from "../aiTypes";
 

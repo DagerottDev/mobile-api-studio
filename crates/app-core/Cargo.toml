@@ -1,0 +1,30 @@
+[package]
+name = "app-core"
+version = "0.0.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ai-core = { path = "../ai-core" }
+ai-storage = { path = "../ai-storage" }
+base64.workspace = true
+capture-core = { path = "../capture-core" }
+capture-mitm = { path = "../capture-mitm" }
+compare-core = { path = "../compare-core" }
+core-model = { path = "../core-model" }
+device-android = { path = "../device-android" }
+device-ios = { path = "../device-ios" }
+mock-core = { path = "../mock-core" }
+mock-fixtures = { path = "../mock-fixtures" }
+mock-storage = { path = "../mock-storage" }
+replay = { path = "../replay" }
+sdk-protocol = { path = "../sdk-protocol" }
+sdk-storage = { path = "../sdk-storage" }
+sdk-transport = { path = "../sdk-transport" }
+secret-store = { path = "../secret-store" }
+serde.workspace = true
+serde_json.workspace = true
+storage = { path = "../storage" }
+tokio.workspace = true
+workspace-core = { path = "../workspace-core" }

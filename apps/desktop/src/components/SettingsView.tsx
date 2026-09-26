@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../api/invoke";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   ConnectionDoctorReport,
@@ -85,19 +85,22 @@ export function SettingsView() {
   async function exportBundle() {
     setBusy(true);
     try {
-      const result = await invoke<{ bundle: PortableWorkspaceBundle; path: string }>(
-        "export_workspace_to_download",
-      );
-      const bundle = result.bundle;
+      const bundle = await invoke<PortableWorkspaceBundle>("export_workspace");
       const json = JSON.stringify(bundle, null, 2);
       setBundleText(json);
+      const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `mobile-api-studio-workspace-${new Date().toISOString().slice(0, 10)}.mas.json`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       await invoke<OnboardingStep>("set_onboarding_step", {
         key: "export_recovery_bundle",
         completed: true,
       });
       await refreshSteps();
       setMessage(
-        `Exported ${bundle.sessions.length} sessions, ${bundle.collections.length} collections, and ${bundle.environments.length} environments to ${result.path}.`,
+        `Downloaded ${bundle.sessions.length} sessions, ${bundle.collections.length} collections, and ${bundle.environments.length} environments.`,
       );
       setError(null);
     } catch (value) {

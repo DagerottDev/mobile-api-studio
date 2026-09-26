@@ -11,6 +11,7 @@ import "./settings.css";
 import "./sdk.css";
 import "./compare.css";
 import "./ai.css";
+import "./theme.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

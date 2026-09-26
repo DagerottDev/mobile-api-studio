@@ -1,17 +1,17 @@
 # Architecture
 
-> **As-built status:** this document reflects the implementation merged through v0.5. Formal validation is deferred; architecture described here is implemented structure, not a claim that every path has been independently verified.
+> **As-built status:** v0.5 domain features and the localhost migration are implemented. Owner-led device and migration validation remains open.
 
 ## 1. System overview
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
-│                    Tauri Desktop App                         │
-│            React UI + task-oriented Rust commands            │
+│ Browser at http://127.0.0.1:8180 (React, nine routes)        │
+│ POST /api/invoke + process-lifetime header token             │
 └──────────────────────────────┬───────────────────────────────┘
                                │
                   ┌────────────┴────────────┐
-                  │     Rust application    │
+                  │ Axum + app-core crate   │
                   │ orchestration + state  │
                   └─┬─────┬─────┬─────┬────┘
                     │     │     │     │
@@ -59,9 +59,9 @@ It does not directly:
 - access Keychain secrets;
 - call external AI providers directly.
 
-### Tauri/application layer
+### Localhost service and application core
 
-Owns user workflows and bridges UI to focused Rust crates:
+`apps/local-server` serves the built UI, checks loopback Host and same-origin requests, and exposes an explicit command allowlist. `crates/app-core` owns state and all 71 task workflows, bridging the UI to focused Rust crates. Connection-changing operations are serialized across tabs:
 
 - connect/disconnect;
 - capture/session lifecycle;
@@ -188,7 +188,7 @@ mobile request
   -> mitmproxy addon
   -> normalized sidecar event
   -> capture-mitm
-  -> Tauri ingestion
+  -> app-core ingestion
   -> SQLite metadata + body store
   -> Traffic queries
   -> React timeline / Inspector
@@ -366,13 +366,13 @@ Workspace
 Settings
 ```
 
-The UI queries task-oriented Tauri commands; it does not mirror the whole database into a single JavaScript state store.
+The UI queries the same task-oriented command names through one typed HTTP adapter; it does not mirror the whole database into a single JavaScript state store. Each area has a stable local URL. The former Tauri frontend is retained temporarily for parity comparison and is not the release target.
 
 ## 14. Platform scope
 
 ### Implemented target
 
-- macOS desktop host;
+- macOS host with loopback-only browser UI;
 - iOS Simulator;
 - Android Emulator.
 

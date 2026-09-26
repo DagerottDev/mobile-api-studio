@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
   "apps/desktop/src-tauri",
+  "apps/local-server",
+  "crates/app-core",
   "crates/core-model",
   "crates/capture-core",
   "crates/capture-mitm",

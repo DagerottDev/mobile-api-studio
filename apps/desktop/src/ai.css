@@ -23,10 +23,10 @@
 .ai-settings-grid input,
 .ai-settings-grid textarea {
   width: 100%;
-  border: 1px solid #343947;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  background: #0f1217;
-  color: #d9dde4;
+  background: var(--canvas);
+  color: var(--ink);
   padding: 10px;
   outline: none;
   box-sizing: border-box;
@@ -45,12 +45,12 @@
 .ai-key-pill {
   border-radius: 999px;
   padding: 5px 8px;
-  background: rgba(255,255,255,.07);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: .04em;
 }
-.ai-key-pill.configured { background: rgba(76,195,138,.14); color: #8bd8b2; }
+.ai-key-pill.configured { background: rgba(76,195,138,.14); color: var(--success); }
 
 .ai-fingerprint {
   display: grid;
@@ -58,15 +58,15 @@
   gap: 10px;
   align-items: center;
   padding: 10px 14px;
-  border-bottom: 1px solid #262c36;
-  color: #737c89;
+  border-bottom: 1px solid var(--surface-alt);
+  color: var(--muted);
   font-size: 10px;
 }
 .ai-fingerprint code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #b9c0ca;
+  color: var(--ink);
 }
 
 .ai-context-preview {
@@ -74,8 +74,8 @@
   max-height: 520px;
   overflow: auto;
   padding: 14px;
-  background: #0c0f14;
-  color: #c9ced7;
+  background: var(--surface-alt);
+  color: var(--ink);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -87,7 +87,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px;
-  border-top: 1px solid #262c36;
+  border-top: 1px solid var(--surface-alt);
 }
 .ai-send-row p { max-width: 760px; }
 
@@ -95,7 +95,7 @@
   padding: 16px;
   white-space: pre-wrap;
   line-height: 1.55;
-  color: #d4d8df;
+  color: var(--ink);
   font-size: 12px;
 }
 
@@ -107,16 +107,16 @@
   gap: 12px;
   padding: 10px 14px;
   border: 0;
-  border-bottom: 1px solid #252a34;
+  border-bottom: 1px solid var(--surface-alt);
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
-.ai-history-list button:hover { background: rgba(255,255,255,.04); }
+.ai-history-list button:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
 .ai-history-list button > span:first-child { display: grid; gap: 2px; min-width: 0; }
-.ai-history-list small { color: #737c89; }
-.ai-history-list button > span:last-child { color: #737c89; font-size: 10px; text-transform: uppercase; }
+.ai-history-list small { color: var(--muted); }
+.ai-history-list button > span:last-child { color: var(--muted); font-size: 10px; text-transform: uppercase; }
 
 .ai-settings-grid {
   display: grid;
@@ -145,7 +145,7 @@
   border-radius: 8px;
   padding: 9px 11px;
   background: rgba(76,195,138,.07);
-  color: #8bd8b2;
+  color: var(--success);
   font-size: 11px;
 }
 

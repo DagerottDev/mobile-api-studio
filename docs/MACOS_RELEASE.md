@@ -1,34 +1,26 @@
-# macOS release preparation
+# macOS localhost release preparation
 
-This project can produce a macOS app bundle. Distribution remains an owner decision after the final validation checklist in [FINAL_VALIDATION.md](FINAL_VALIDATION.md). The currently checked build is an Apple Silicon local preview, not a notarized public release.
+The first distribution method is a source build. No prebuilt, signed, or notarized Mac executable is published. Apple Developer ID signing and notarization are not required to run the source-built localhost service; the developer still needs the macOS, Rust, Node, mitmproxy, and mobile runtime tooling below. The earlier Tauri app bundle was a local preview and is historical. See the [local validation record](LOCALHOST_VALIDATION.md) for checks completed so far.
 
-## Prerequisites
+## Build and run
 
-- macOS with Xcode Command Line Tools, Rust, Node.js, and pnpm 10.15.0.
-- Install workspace dependencies with `pnpm install --frozen-lockfile` and build Rust with the committed `Cargo.lock`.
-- Install `mitmdump` separately or set its absolute executable path in Settings. The Python capture bridge is packaged inside the app; `mitmdump` itself is not bundled.
-- Install Xcode and the intended iOS Simulator runtime for iOS capture, or Android SDK Platform Tools and an emulator for Android capture.
-
-Finder-launched apps may have a shorter `PATH` than a terminal. If Connection Doctor cannot find `mitmdump`, set its absolute path in Settings and restart. Android Platform Tools must be on the app's process `PATH` for Android discovery.
-
-## Build and inspect
-
-From `apps/desktop`:
+Install Xcode Command Line Tools, Rust, Node.js 20.19+ or 22.12+, pnpm 10.15.0, and `mitmdump`. Install Xcode and Simulator runtimes for iOS work, or Android SDK Platform Tools and an Emulator for Android work. Then, from the repository root:
 
 ```sh
-npm run build
-./node_modules/.bin/tauri build --bundles app,dmg
+pnpm install --frozen-lockfile
+./scripts/run-local.sh
 ```
 
-The app is written to `target/release/bundle/macos/Mobile API Studio.app` and the disk image to `target/release/bundle/dmg/`. Verify the app contains `Contents/Resources/sidecars/mitm-addon/mas_bridge.py`. Run `codesign --verify --deep --strict --verbose=2` on the app and `hdiutil verify` on the disk image. Launch the packaged app and run Connection Doctor; a source-tree launch does not validate the packaged resource path.
+`./scripts/run-local.sh` builds the browser UI, compiles the Rust service, binds `127.0.0.1:8180`, and opens the URL. `./scripts/run-local.sh --port 8190` changes only the UI port; capture and SDK ingestion use `8181` and `8182`. The capture bridge runs from this source tree. Keep the source tree in place while using the service. If `mitmdump` is not on `PATH`, set its absolute path in Settings.
 
-The default signing identity is ad hoc (`-`) for local preview builds. Ad hoc signing is not suitable for frictionless distribution to other Macs. For direct distribution, install an Apple Developer ID Application certificate, set `APPLE_SIGNING_IDENTITY` to that identity, provide notarization credentials, and rebuild. Follow [Tauri's macOS signing and notarization guide](https://v2.tauri.app/distribute/sign/macos/). Do not publish the ad hoc artifact as a finished macOS release.
+Close the old desktop app before using the shared directory at `~/Library/Application Support/dev.mobileapistudio.desktop`. Back up `app.db` before any future schema migration. Stop the service with Ctrl+C to end capture and restore the Android proxy. After a forced stop, reopen Connect and use the pending rollback recovery control before another capture.
 
 ## Release decision gates
 
-- Choose the public version, product name, and supported macOS/CPU matrix. The source license is Apache-2.0; the current app identifies itself as `0.0.1` and the UI says `pre-alpha`.
-- Complete the relevant workflows in [FINAL_VALIDATION.md](FINAL_VALIDATION.md), especially iOS/Android capture, Android proxy rollback, import/export, secrets, and AI redaction. A build and launch check does not cover them.
-- Review third-party licenses and how `mitmdump` will be installed or managed on recipient Macs.
-- Sign with Developer ID, notarize, staple, and verify the exact artifact intended for distribution. Verify it on a clean Mac and record its SHA-256 digest.
+- Complete the [owner-led validation checklist](FINAL_VALIDATION.md) on an iOS Simulator and Android Emulator. Record the OS, CPU, tool versions, runtimes, and result for each gate.
+- Verify existing-data restart, workspace import/export and omitted secrets, AI preview before send, two-tab connection races, local API rejection paths, and normal and forced-stop proxy recovery.
+- Check light and dark appearances, narrow and wide windows, keyboard use, and all nine stable URLs.
+- Review third-party licenses and how contributors install `mitmdump`.
+- Publish source instructions only after those checks pass. If a packaged Mac distribution is later desired, plan Developer ID signing, notarization, and clean-Mac verification separately.
 
-For Android, the emulator's `10.0.2.2` address reaches the host loopback interface, so the capture listener binds to `127.0.0.1` rather than exposing a proxy on every network interface. See [Android's emulator address documentation](https://developer.android.com/studio/run/emulator-networking-address).
+The Android Emulator reaches the host capture listener through `10.0.2.2`; the UI service remains on `127.0.0.1`. This is a same-Mac tool and is not hosted on the internet.
