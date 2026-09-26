@@ -83,7 +83,9 @@ export function ConnectView({ onOpenTraffic }: { onOpenTraffic: () => void }) {
       setPendingRollback(null);
       setError(null);
     } catch (value) {
-      setError(formatInvokeError(value));
+      const message = formatInvokeError(value);
+      await refresh();
+      setError(message);
     } finally {
       setActing(false);
     }
@@ -98,7 +100,9 @@ export function ConnectView({ onOpenTraffic }: { onOpenTraffic: () => void }) {
       setPendingRollback(null);
       setError(null);
     } catch (value) {
-      setError(formatInvokeError(value));
+      const message = formatInvokeError(value);
+      await refresh();
+      setError(message);
     } finally {
       setActing(false);
     }
