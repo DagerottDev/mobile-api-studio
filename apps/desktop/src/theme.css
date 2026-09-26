@@ -121,8 +121,8 @@ input, textarea, select { color: var(--ink); }
 @media (max-width: 760px) {
   .app-shell { display: block; }
   .sidebar { padding: 13px 16px; border-right: 0; border-bottom: 1px solid var(--line); gap: 10px; }
-  .sidebar nav { display: flex; overflow-x: auto; gap: 12px; }
-  .nav-group { display: flex; gap: 3px; margin: 0; flex: 0 0 auto; align-items: center; }
+  .sidebar nav { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+  .nav-group { display: flex; flex-wrap: wrap; gap: 3px; margin: 0; align-items: center; }
   .nav-label { display: none; }
   .nav-item { padding: 7px 10px; white-space: nowrap; min-height: 36px; }
   .sidebar-metric, .core-status { display: none; }

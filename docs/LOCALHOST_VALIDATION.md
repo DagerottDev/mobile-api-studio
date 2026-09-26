@@ -19,12 +19,13 @@ Environment for the device pass: macOS 27.0 on arm64, Rust 1.98.1, Node 26.0.0, 
 - A protected SQLite backup and body-store copy of the owner's existing data opened in the localhost service. Eight historical list commands returned the expected record counts before and after restart, and SQLite `quick_check` passed. The temporary copy was removed; the owner's data directory was not modified.
 - The disposable iOS 26.5 Simulator booted and appeared in discovery with the expected name, state, version, and CA capability. Connect started capture, generated a CA, and installed it through `simctl`; the service returned the manual-proxy and full-trust guidance. A localhost HTTP request sent through the native proxy appeared in Traffic with HTTP 200 and opened through `get_flow_detail`. Disconnect cleared the journal. The disposable Simulator and generated CA material were removed. The HTTP request came from the Mac, not from an app inside the Simulator.
 - `cargo test -p app-core --locked --offline` passed three focused tests. A replace import with invalid body bytes or a missing environment reference now fails before clearing an existing session. Workspace export redacts known secret header names even if imported records marked them non-sensitive. Connection Doctor distinguishes a live capture journal from an interrupted one.
+- With macOS Appearance changed from Dark to Light, the in-app browser followed the system theme after reload. At 375 px and 1440 px, all nine routes rendered their expected headings without page-level horizontal overflow. At 375 px, all nine navigation links were visible after changing the mobile navigation to wrap. Connect and Traffic were visually inspected in Light, including Traffic's narrow empty state. The original Dark appearance was restored afterward.
 
 ## Still required for release
 
 - Owner-led traffic from a non-pinned app inside an iOS Simulator, full-trust confirmation, and Android Emulator capture, certificate trust, Replay, SDK correlation, mocking, and breakpoints. The disposable Android proxy checks above do not replace a real emulator check.
 - Real two-tab connection races with a booted runtime, plus an owner-led run against the shared application data directory after closing the historical app.
-- Visual and keyboard checks in macOS light appearance and the full narrow/wide UI across the nine areas.
+- Detailed visual and keyboard interaction checks across all nine areas in both appearances; the route, overflow, and visible-navigation checks above do not cover every control state.
 - Optional AI preview and send with a configured provider. The code retains the preview fingerprint check, but no external request was sent during this pass.
 - Replace import still needs a storage-failure recovery check: preflight rejects known malformed content, but a database write failure after clearing may leave a partial replacement.
 
