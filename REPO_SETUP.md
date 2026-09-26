@@ -25,7 +25,7 @@ The current source build uses a loopback-only Axum service with a React browser 
 Rust toolchain compatible with workspace rust-version
 Node.js + pnpm
 Xcode + Command Line Tools for iOS Simulator workflows
-Android SDK Platform Tools / ADB for Android Emulator workflows
+Android SDK Platform Tools / ADB, Emulator, and a system image for Android workflows
 mitmproxy/mitmdump or the configured capture executable
 ```
 
@@ -42,6 +42,8 @@ Run `pnpm install --frozen-lockfile` and `./scripts/run-local.sh` from the repos
 ### Android Emulator
 
 - ADB is used for discovery and emulator proxy configuration.
+- Put the installed `platform-tools` directory on `PATH` before launching the service. With Homebrew command-line tools on Apple Silicon, it may be `/opt/homebrew/share/android-commandlinetools/platform-tools`.
+- `sdkmanager` may need `JAVA_HOME` set to a JDK path, such as `/opt/homebrew/opt/openjdk`; an installed `adb` alone does not provide an Emulator or system image.
 - The emulator reaches the development host through the standard emulator host alias (`10.0.2.2`) where applicable.
 - Debug app network-security configuration may need to trust user-added CAs.
 

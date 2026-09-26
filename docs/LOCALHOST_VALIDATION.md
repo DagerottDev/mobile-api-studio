@@ -2,6 +2,8 @@
 
 Date: 2026-09-26. This record covers the source-built localhost implementation on the development Mac. It does not close the owner-led device checklist in [FINAL_VALIDATION.md](FINAL_VALIDATION.md).
 
+Environment for the device pass: macOS 27.0 on arm64, Rust 1.98.1, Node 26.0.0, pnpm 11.19.0, Xcode 27.0, mitmdump 12.2.3, and code commit `df03065`. The disposable device was an iPhone 17e Simulator with iOS 26.5.
+
 ## Verified locally
 
 - `cargo check --workspace --locked --offline` compiled the Rust workspace, including the historical Tauri crate and new `app-core` and Axum service.
@@ -15,12 +17,15 @@ Date: 2026-09-26. This record covers the source-built localhost implementation o
 - With a disposable `adb` shim and native `mitmdump`, concurrent HTTP connect requests produced exactly one active connection and one `connection_already_active` error. A failed proxy read stopped capture without leaving a rollback journal. A failed proxy restore retained the active connection and journal for retry; retry restored the original fake proxy. While capture was active, the journal was hidden from the pending-recovery command and recovery was rejected until disconnect. No real device settings were changed.
 - In the same disposable setup, SIGKILL preserved the pending rollback journal. Restart exposed that journal, blocked a new capture, and restored the original fake proxy through recovery. SIGTERM during active capture restored the proxy and closed the UI and capture listeners, then removed the journal and process lock. These checks do not establish behavior on a real emulator.
 - A protected SQLite backup and body-store copy of the owner's existing data opened in the localhost service. Eight historical list commands returned the expected record counts before and after restart, and SQLite `quick_check` passed. The temporary copy was removed; the owner's data directory was not modified.
+- The disposable iOS 26.5 Simulator booted and appeared in discovery with the expected name, state, version, and CA capability. Connect started capture, generated a CA, and installed it through `simctl`; the service returned the manual-proxy and full-trust guidance. A localhost HTTP request sent through the native proxy appeared in Traffic with HTTP 200 and opened through `get_flow_detail`. Disconnect cleared the journal. The disposable Simulator and generated CA material were removed. The HTTP request came from the Mac, not from an app inside the Simulator.
+- `cargo test -p app-core --locked --offline` passed three focused tests. A replace import with invalid body bytes or a missing environment reference now fails before clearing an existing session. Workspace export redacts known secret header names even if imported records marked them non-sensitive. Connection Doctor distinguishes a live capture journal from an interrupted one.
 
 ## Still required for release
 
-- Owner-led iOS Simulator and Android Emulator capture, certificate trust, Replay, SDK correlation, mocking, breakpoints, and proxy rollback after normal and forced stops.
+- Owner-led traffic from a non-pinned app inside an iOS Simulator, full-trust confirmation, and Android Emulator capture, certificate trust, Replay, SDK correlation, mocking, and breakpoints. The disposable Android proxy checks above do not replace a real emulator check.
 - Real two-tab connection races with a booted runtime, plus an owner-led run against the shared application data directory after closing the historical app.
 - Visual and keyboard checks in macOS light appearance and the full narrow/wide UI across the nine areas.
 - Optional AI preview and send with a configured provider. The code retains the preview fingerprint check, but no external request was sent during this pass.
+- Replace import still needs a storage-failure recovery check: preflight rejects known malformed content, but a database write failure after clearing may leave a partial replacement.
 
-Android Platform Tools were not on this Mac's `PATH` during Connection Doctor. `simctl` discovered installed Simulator definitions, but none was booted for this pass. Keep the localhost release labeled as a source-build preview until the remaining checks are recorded.
+Android Platform Tools were not on this Mac's `PATH` during Connection Doctor. Homebrew OpenJDK 26.0.2 is installed at `/opt/homebrew/opt/openjdk`; setting `JAVA_HOME` to that path allowed `sdkmanager --list_installed` to run. It reported Platform Tools 37.0.1, Build Tools 36.0.0, and Android 36 platform under `/opt/homebrew/share/android-commandlinetools`. The `adb` binary exists there, but no emulator or system image is installed. Keep the localhost release labeled as a source-build preview until the remaining checks are recorded.
