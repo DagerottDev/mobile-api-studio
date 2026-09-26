@@ -1,8 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../api/invoke";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
   ConnectDeviceResult,
   ConnectionDiagnostic,
+  ConnectionDoctorReport,
   ConnectionSnapshot,
   Device,
   DeviceDiscoveryPayload,
@@ -18,12 +19,13 @@ const disconnected: ConnectionSnapshot = {
   proxyPort: null,
 };
 
-export function ConnectView() {
+export function ConnectView({ onOpenTraffic }: { onOpenTraffic: () => void }) {
   const [payload, setPayload] = useState<DeviceDiscoveryPayload>({ devices: [], diagnostics: [] });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionSnapshot>(disconnected);
   const [connectionDiagnostics, setConnectionDiagnostics] = useState<ConnectionDiagnostic[]>([]);
   const [pendingRollback, setPendingRollback] = useState<RollbackJournal | null>(null);
+  const [doctor, setDoctor] = useState<ConnectionDoctorReport | null>(null);
   const [sessionName, setSessionName] = useState("");
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
@@ -32,14 +34,16 @@ export function ConnectView() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [devices, current, rollback] = await Promise.all([
+      const [devices, current, rollback, report] = await Promise.all([
         invoke<DeviceDiscoveryPayload>("list_devices"),
         invoke<ConnectionSnapshot>("current_connection"),
         invoke<RollbackJournal | null>("pending_rollback"),
+        invoke<ConnectionDoctorReport>("connection_doctor"),
       ]);
       setPayload(devices);
       setConnection(current);
       setPendingRollback(rollback);
+      setDoctor(report);
       setSelectedId((existing) => {
         if (current.deviceId && devices.devices.some((device) => device.id === current.deviceId)) {
           return current.deviceId;
@@ -79,7 +83,9 @@ export function ConnectView() {
       setPendingRollback(null);
       setError(null);
     } catch (value) {
-      setError(formatInvokeError(value));
+      const message = formatInvokeError(value);
+      await refresh();
+      setError(message);
     } finally {
       setActing(false);
     }
@@ -94,7 +100,9 @@ export function ConnectView() {
       setPendingRollback(null);
       setError(null);
     } catch (value) {
-      setError(formatInvokeError(value));
+      const message = formatInvokeError(value);
+      await refresh();
+      setError(message);
     } finally {
       setActing(false);
     }
@@ -119,6 +127,20 @@ export function ConnectView() {
   const selectedReady = selected ? isReady(selected) : false;
 
   return (
+    <div className="connect-workbench">
+      <section className="readiness-strip" aria-label="Capture readiness">
+        <div><span className="eyebrow">01 / CHECK</span><strong>Prerequisites</strong><small>{doctor ? `${doctor.checks.filter((check) => check.status === "pass").length} of ${doctor.checks.length} ready` : "Checking local tools"}</small></div>
+        <div><span className="eyebrow">02 / CHOOSE</span><strong>Runtime</strong><small>{loading ? "Scanning…" : `${payload.devices.length} discovered`}</small></div>
+        <div><span className="eyebrow">03 / CAPTURE</span><strong>Connection</strong><small>{connection.connected ? "Capturing traffic" : "Waiting for a device"}</small></div>
+        <button className="secondary" onClick={onOpenTraffic} disabled={!connection.connected}>Open Traffic →</button>
+      </section>
+      {doctor && doctor.checks.some((check) => check.status !== "pass") ? <section className="panel readiness-checks" aria-label="Prerequisites and actions">
+        <div className="panel-heading"><div><strong>Before you connect</strong><span>Fix the items that apply to your runtime</span></div></div>
+        <div className="check-grid">{doctor.checks.map((check) => <article className={`check-item ${check.status}`} key={check.id}>
+          <span className="check-symbol" aria-hidden="true">{check.status === "pass" ? "✓" : "!"}</span>
+          <div><strong>{check.title}</strong><p>{check.detail}</p>{check.action ? <small>{check.action}</small> : null}</div>
+        </article>)}</div>
+      </section> : null}
     <section className="connect-grid">
       <div className="panel device-panel">
         <div className="panel-heading">
@@ -208,6 +230,7 @@ export function ConnectView() {
                   <button className="secondary wide" onClick={() => void disconnect()} disabled={acting}>
                     {acting ? "Disconnecting…" : "Disconnect capture"}
                   </button>
+                  <button className="primary wide" onClick={onOpenTraffic}>Inspect traffic →</button>
                 </>
               ) : (
                 <>
@@ -257,6 +280,7 @@ export function ConnectView() {
         ) : null}
       </div>
     </section>
+    </div>
   );
 }
 

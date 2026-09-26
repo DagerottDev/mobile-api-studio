@@ -8,7 +8,7 @@ By submitting a contribution, you agree that it may be distributed under this re
 
 Implementation Phases 0–5 are complete. During those phases, the repository owner explicitly deferred automated tests, CI, benchmark suites, and formal verification until the end of implementation.
 
-The current next stage is **independent owner-led validation**. Do not retroactively claim test evidence for the implementation PRs.
+The current source build runs a Rust localhost service and browser UI; see [README.md](README.md) for `./scripts/run-local.sh`. The earlier Tauri app is retained temporarily for parity comparison. The release decision still depends on **independent owner-led device validation**. Do not retroactively claim test evidence for the implementation PRs.
 
 ## Branching
 
@@ -35,6 +35,8 @@ Include:
 - owner validation performed, if any;
 - screenshots for UI changes when useful;
 - security/privacy implications when touching certificates, secrets, proxy settings, storage, SDK transport, exports, or AI context.
+
+For localhost changes, run the relevant checks locally and state their result. Useful commands are `cargo check --workspace --locked`, `cargo test -p mobile-api-studio-server`, and `npm run build --prefix apps/desktop`. These are contributor checks, not a CI release gate. See the [local validation record](docs/LOCALHOST_VALIDATION.md) for what has already been verified and what remains open.
 
 ### Future feature PRs
 

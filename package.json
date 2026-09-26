@@ -4,9 +4,9 @@
   "license": "Apache-2.0",
   "packageManager": "pnpm@10.15.0",
   "scripts": {
-    "dev": "pnpm --filter @mobile-api-studio/desktop dev",
+    "dev": "./scripts/run-local.sh",
     "build": "pnpm --filter @mobile-api-studio/desktop build",
     "typecheck": "pnpm --filter @mobile-api-studio/desktop typecheck",
-    "tauri": "pnpm --filter @mobile-api-studio/desktop tauri"
+    "local": "./scripts/run-local.sh"
   }
 }

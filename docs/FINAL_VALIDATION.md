@@ -8,7 +8,7 @@ The repository owner controls how much of this is performed manually, with scrip
 
 The final pass should answer four questions:
 
-1. Can the desktop app build and launch on the intended macOS development machine?
+1. Can the source-built localhost service build and launch on the intended macOS development machine?
 2. Do the supported iOS Simulator and Android Emulator workflows behave correctly end to end?
 3. Are security/privacy/rollback boundaries preserved during real use and failures?
 4. Which defects or unsupported runtime combinations must be fixed/documented before any release decision?
@@ -22,7 +22,7 @@ macOS version
 hardware architecture
 Rust version
 Node/pnpm version
-Tauri/toolchain versions
+Axum/service commit and browser versions
 Xcode version
 selected iOS Simulator runtime/device
 Android SDK / platform-tools version
@@ -35,11 +35,17 @@ When filing a validation issue, include the relevant subset.
 
 ---
 
-# 3. Desktop startup and local persistence
+# 3. Localhost startup and local persistence
 
 Validate:
 
-- desktop app launches successfully;
+- `./scripts/run-local.sh` builds the UI, starts the service, and opens `http://127.0.0.1:8180`;
+- `--port` changes the UI port while capture and SDK listeners remain on `8181` and `8182`;
+- direct navigation, refresh, and browser back/forward work for Connect, Traffic, Replay, Mocks, Compare, AI, SDK, Workspace, and Settings;
+- light and dark appearances, narrow and wide windows, keyboard focus, and empty/error states are usable;
+- two browser tabs cannot race connection changes;
+- unexpected Host and Origin values, missing/invalid tokens, and cross-origin API calls are rejected;
+- old Tauri app is closed while shared data is used;
 - Rust health command reports a usable application-data/database path;
 - application data directory is created correctly;
 - SQLite opens/migrates without destructive data loss;
@@ -242,7 +248,7 @@ Using the sample or another debug app, validate:
 - SDK transport does not loop through the intercepted OkHttp/proxy path;
 - app-supplied source metadata is not replaced with irrelevant OkHttp framework frames;
 - proxy removes internal correlation metadata before upstream delivery;
-- desktop app/session/flow enrichment works.
+- local service/session/flow enrichment works.
 
 ---
 

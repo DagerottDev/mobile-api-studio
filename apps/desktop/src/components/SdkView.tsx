@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../api/invoke";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { SdkClientRecord, SdkEnvelope, SdkSetupInfo } from "../sdkTypes";
 import { contextForEnvelope } from "../sdkTypes";

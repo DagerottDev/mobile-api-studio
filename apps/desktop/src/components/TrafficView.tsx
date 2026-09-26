@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../api/invoke";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { MockFixture, MockRule } from "../mockTypes";
 import type { FlowSdkEnrichment, SdkContextSnapshot, SdkEnvelope } from "../sdkTypes";
@@ -35,6 +35,7 @@ export function TrafficView() {
   const [sessionFilter, setSessionFilter] = useState("all");
   const [collectionId, setCollectionId] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [curlPreview, setCurlPreview] = useState<string | null>(null);
   const [curlCopied, setCurlCopied] = useState(false);
   const [saveState, setSaveState] = useState("Save to collection");
@@ -56,6 +57,7 @@ export function TrafficView() {
   }, []);
 
   const refresh = useCallback(async () => {
+    setLoading(true);
     try {
       const sdkNeedle = sdkMetadataFilter.trim();
       const [baseResults, sdkFlowIds] = await Promise.all([
@@ -84,6 +86,8 @@ export function TrafficView() {
       setError(null);
     } catch (value) {
       setError(formatInvokeError(value));
+    } finally {
+      setLoading(false);
     }
   }, [methodFilter, sdkMetadataFilter, sessionFilter, sourceFilter, statusFilter, textFilter]);
 
@@ -208,28 +212,28 @@ export function TrafficView() {
         <div className="panel-heading">
           <div>
             <strong>Traffic search</strong>
-            <span>{results.length} matches · network + app-aware filters · live refresh</span>
+            <span>{loading ? "Searching traffic…" : `${results.length.toLocaleString()} matching flows`} · live refresh</span>
           </div>
           <button className="secondary compact" onClick={() => void Promise.all([refresh(), refreshMetadata()])}>Refresh</button>
         </div>
 
-        <div className="traffic-filters traffic-filters-advanced sdk-aware-filters">
-          <input className="text-input" value={textFilter} onChange={(event) => setTextFilter(event.target.value)} placeholder="Network: host, path, endpoint, session" />
-          <input className="text-input" value={sdkMetadataFilter} onChange={(event) => setSdkMetadataFilter(event.target.value)} placeholder="App context: screen, feature, source" />
-          <select value={sessionFilter} onChange={(event) => setSessionFilter(event.target.value)}>
+        <div className="traffic-search"><input className="text-input" aria-label="Search network traffic" value={textFilter} onChange={(event) => setTextFilter(event.target.value)} placeholder="Search host, path, or endpoint" /></div>
+        <details className="traffic-filter-details"><summary>More filters</summary><div className="traffic-filters traffic-filters-advanced sdk-aware-filters">
+          <input className="text-input" aria-label="Filter app context" value={sdkMetadataFilter} onChange={(event) => setSdkMetadataFilter(event.target.value)} placeholder="App context: screen, feature, source" />
+          <select aria-label="Filter session" value={sessionFilter} onChange={(event) => setSessionFilter(event.target.value)}>
             <option value="all">All sessions</option>
             {sessions.map((session) => <option key={session.id} value={session.id}>{session.name}</option>)}
           </select>
-          <select value={methodFilter} onChange={(event) => setMethodFilter(event.target.value)}>
+          <select aria-label="Filter method" value={methodFilter} onChange={(event) => setMethodFilter(event.target.value)}>
             {METHODS.map((method) => <option key={method} value={method}>{method === "all" ? "All methods" : method}</option>)}
           </select>
-          <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as "all" | FlowSource)}>
+          <select aria-label="Filter source" value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as "all" | FlowSource)}>
             {SOURCES.map((source) => <option key={source} value={source}>{source === "all" ? "All sources" : source}</option>)}
           </select>
-          <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
+          <select aria-label="Filter status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as StatusFilter)}>
             <option value="all">All statuses</option><option value="2xx">2xx</option><option value="3xx">3xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option>
           </select>
-        </div>
+        </div></details>
 
         {error ? <div className="error-banner">{error}</div> : null}
 
@@ -243,7 +247,8 @@ export function TrafficView() {
               <span>{flow.durationMs != null ? `${flow.durationMs} ms` : "—"}</span>
             </button>
           ))}
-          {results.length === 0 ? <p className="empty-state">No stored flows match these network/app-context filters.</p> : null}
+          {!loading && results.length === 0 ? <p className="empty-state">No traffic matches. Start a capture in Connect, or clear the filters to see stored flows.</p> : null}
+          {loading && results.length === 0 ? <p className="empty-state" role="status">Loading captured traffic…</p> : null}
         </div>
       </div>
 
