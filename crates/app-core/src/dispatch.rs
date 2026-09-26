@@ -150,7 +150,7 @@ pub async fn invoke(command: &str, args: Value, state: &AppState) -> Result<Valu
             output(crate::connect_device(device_id, session_name, State(state)).await?)
         }
         "disconnect_device" => output(crate::disconnect_device(State(state)).await?),
-        "pending_rollback" => output(crate::pending_rollback(State(state))?),
+        "pending_rollback" => output(crate::pending_rollback(State(state)).await?),
         "recover_pending_rollback" => output(crate::recover_pending_rollback(State(state)).await?),
         "list_mock_rules" => output(crate::mock_commands::list_mock_rules(State(state))?),
         "upsert_mock_rule" => {

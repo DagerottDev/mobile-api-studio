@@ -246,116 +246,150 @@ async fn connect_device(
         .await
         .map_err(capture_error_to_app_error)?;
 
-    let mut diagnostics = Vec::new();
     let mut previous_android_proxy = None;
+    let connection_result: Result<ConnectDeviceResult, AppError> = async {
+        let mut diagnostics = Vec::new();
+        if is_android {
+            let provider = AndroidDeviceProvider;
+            previous_android_proxy = provider
+                .get_http_proxy(&device_id)
+                .map_err(device_error_to_app_error)?;
+            let journal = RollbackJournal {
+                schema_version: SCHEMA_VERSION,
+                device_id: device_id.clone(),
+                platform: DevicePlatform::Android,
+                session_id: session_id.clone(),
+                previous_android_proxy: previous_android_proxy.clone(),
+                ios_ca_installed: false,
+            };
+            save_rollback_journal(&state.rollback_path, &journal)?;
+            provider
+                .set_http_proxy(&device_id, ANDROID_HOST_ALIAS, DEFAULT_CAPTURE_PORT)
+                .map_err(device_error_to_app_error)?;
+            diagnostics.push(ConnectionDiagnostic {
+                code: "android_ca_trust_guided".into(),
+                title: "HTTPS trust may require app configuration".into(),
+                message: "The emulator is routed through Mobile API Studio. HTTPS interception also requires the app to trust the mitmproxy CA.".into(),
+                recoverable: true,
+                suggested_action: Some(
+                    "For development builds, trust user-added CAs with Android network security configuration, or install the CA manually from mitm.it. Certificate-pinned apps require an app-side debug path rather than proxy bypassing."
+                        .into(),
+                ),
+            });
+        } else {
+            let certificate = wait_for_certificate(&state.capture_engine.certificate_path()).await?;
+            let journal = RollbackJournal {
+                schema_version: SCHEMA_VERSION,
+                device_id: device_id.clone(),
+                platform: DevicePlatform::Ios,
+                session_id: session_id.clone(),
+                previous_android_proxy: None,
+                ios_ca_installed: true,
+            };
+            save_rollback_journal(&state.rollback_path, &journal)?;
+            IosDeviceProvider
+                .install_root_ca(&device_id, &certificate)
+                .map_err(device_error_to_app_error)?;
+            diagnostics.push(ConnectionDiagnostic {
+                code: "ios_proxy_manual_configuration".into(),
+                title: "Configure the Simulator proxy manually".into(),
+                message: format!(
+                    "The capture engine is listening on 127.0.0.1:{DEFAULT_CAPTURE_PORT}, but Mobile API Studio does not change macOS/iOS proxy settings automatically."
+                ),
+                recoverable: true,
+                suggested_action: Some(
+                    "Route the Simulator through the local proxy for this session. The app intentionally avoids changing system-wide macOS proxy settings automatically."
+                        .into(),
+                ),
+            });
+            diagnostics.push(ConnectionDiagnostic {
+                code: "ios_ca_full_trust_required".into(),
+                title: "Enable full trust for the capture CA".into(),
+                message: "The CA was added to the Simulator root store; recent iOS versions can still require enabling full trust in Certificate Trust Settings.".into(),
+                recoverable: true,
+                suggested_action: Some(
+                    "In the Simulator open Settings → General → About → Certificate Trust Settings and enable full trust for the mitmproxy certificate."
+                        .into(),
+                ),
+            });
+        }
 
-    if is_android {
-        let provider = AndroidDeviceProvider;
-        previous_android_proxy = provider
-            .get_http_proxy(&device_id)
-            .map_err(device_error_to_app_error)?;
-        let journal = RollbackJournal {
+        let session = CaptureSession {
             schema_version: SCHEMA_VERSION,
+            id: session_id.clone(),
+            name: sanitize_session_name(
+                session_name.unwrap_or_else(|| format!("Capture {timestamp}")),
+            ),
+            status: SessionStatus::Active,
+            started_at: timestamp,
+            ended_at: None,
+            device_id: Some(device_id.clone()),
+            app_id: None,
+            connection_strategy: Some(strategy.into()),
+            capture_engine: Some("mitmdump".into()),
+            notes: None,
+        };
+        state
+            .database
+            .create_session(&session)
+            .map_err(|error| AppError::storage(error.to_string()))?;
+
+        let active = ActiveConnection {
+            handle: handle.clone(),
             device_id: device_id.clone(),
-            platform: DevicePlatform::Android,
-            session_id: session_id.clone(),
+            strategy: strategy.into(),
             previous_android_proxy: previous_android_proxy.clone(),
-            ios_ca_installed: false,
         };
-        save_rollback_journal(&state.rollback_path, &journal)?;
-        if let Err(error) =
-            provider.set_http_proxy(&device_id, ANDROID_HOST_ALIAS, DEFAULT_CAPTURE_PORT)
-        {
-            let _ = state.capture_engine.stop(handle.clone()).await;
-            let _ = restore_android_proxy(&provider, &device_id, previous_android_proxy.as_deref());
-            let _ = clear_rollback_journal(&state.rollback_path);
-            return Err(device_error_to_app_error(error));
-        }
-        diagnostics.push(ConnectionDiagnostic {
-            code: "android_ca_trust_guided".into(),
-            title: "HTTPS trust may require app configuration".into(),
-            message: "The emulator is routed through Mobile API Studio. HTTPS interception also requires the app to trust the mitmproxy CA.".into(),
-            recoverable: true,
-            suggested_action: Some(
-                "For development builds, trust user-added CAs with Android network security configuration, or install the CA manually from mitm.it. Certificate-pinned apps require an app-side debug path rather than proxy bypassing."
-                    .into(),
-            ),
-        });
-    } else {
-        let certificate = wait_for_certificate(&state.capture_engine.certificate_path()).await?;
-        let journal = RollbackJournal {
-            schema_version: SCHEMA_VERSION,
-            device_id: device_id.clone(),
-            platform: DevicePlatform::Ios,
-            session_id: session_id.clone(),
-            previous_android_proxy: None,
-            ios_ca_installed: true,
-        };
-        save_rollback_journal(&state.rollback_path, &journal)?;
-        if let Err(error) = IosDeviceProvider.install_root_ca(&device_id, &certificate) {
-            let _ = state.capture_engine.stop(handle.clone()).await;
-            let _ = clear_rollback_journal(&state.rollback_path);
-            return Err(device_error_to_app_error(error));
-        }
-        diagnostics.push(ConnectionDiagnostic {
-            code: "ios_proxy_manual_configuration".into(),
-            title: "Configure the Simulator proxy manually".into(),
-            message: format!(
-                "The capture engine is listening on 127.0.0.1:{DEFAULT_CAPTURE_PORT}, but Mobile API Studio does not change macOS/iOS proxy settings automatically."
-            ),
-            recoverable: true,
-            suggested_action: Some(
-                "Route the Simulator through the local proxy for this session. The app intentionally avoids changing system-wide macOS proxy settings automatically."
-                    .into(),
-            ),
-        });
-        diagnostics.push(ConnectionDiagnostic {
-            code: "ios_ca_full_trust_required".into(),
-            title: "Enable full trust for the capture CA".into(),
-            message: "The CA was added to the Simulator root store; recent iOS versions can still require enabling full trust in Certificate Trust Settings.".into(),
-            recoverable: true,
-            suggested_action: Some(
-                "In the Simulator open Settings → General → About → Certificate Trust Settings and enable full trust for the mitmproxy certificate."
-                    .into(),
-            ),
-        });
+        let snapshot = connection_snapshot(&active);
+        *state.active_connection.lock().await = Some(active);
+        Ok(ConnectDeviceResult {
+            connection: snapshot,
+            diagnostics,
+        })
     }
+    .await;
 
-    let session = CaptureSession {
-        schema_version: SCHEMA_VERSION,
-        id: session_id.clone(),
-        name: sanitize_session_name(session_name.unwrap_or_else(|| format!("Capture {timestamp}"))),
-        status: SessionStatus::Active,
-        started_at: timestamp,
-        ended_at: None,
-        device_id: Some(device_id.clone()),
-        app_id: None,
-        connection_strategy: Some(strategy.into()),
-        capture_engine: Some("mitmdump".into()),
-        notes: None,
-    };
-    state
-        .database
-        .create_session(&session)
-        .map_err(|error| AppError::storage(error.to_string()))?;
-
-    let active = ActiveConnection {
-        handle,
-        device_id,
-        strategy: strategy.into(),
-        previous_android_proxy,
-    };
-    let snapshot = connection_snapshot(&active);
-    *state.active_connection.lock().await = Some(active);
-    Ok(ConnectDeviceResult {
-        connection: snapshot,
-        diagnostics,
-    })
+    if let Err(original_error) = connection_result {
+        let rollback_error = if is_android && state.rollback_path.exists() {
+            restore_android_proxy(
+                &AndroidDeviceProvider,
+                &device_id,
+                previous_android_proxy.as_deref(),
+            )
+            .and_then(|_| clear_rollback_journal(&state.rollback_path))
+            .err()
+        } else {
+            None
+        };
+        let stop_error = state.capture_engine.stop(handle).await.err();
+        if let Some(rollback_error) = rollback_error {
+            return Err(AppError::new(
+                "connection_rollback_failed",
+                format!(
+                    "Connection failed: {}. Android proxy recovery also failed: {}",
+                    original_error.message, rollback_error.message
+                ),
+                true,
+            ));
+        }
+        if let Some(stop_error) = stop_error {
+            return Err(AppError::new(
+                "capture_cleanup_failed",
+                format!(
+                    "Connection failed: {}. Capture cleanup also failed: {}",
+                    original_error.message, stop_error.message
+                ),
+                true,
+            ));
+        }
+        return Err(original_error);
+    }
+    connection_result
 }
 
 async fn disconnect_device(state: State<'_, AppState>) -> Result<ConnectionSnapshot, AppError> {
     let _operation = state.connection_operation.lock().await;
-    let active = state.active_connection.lock().await.take();
+    let active = state.active_connection.lock().await.clone();
     let Some(active) = active else {
         return Ok(disconnected_snapshot());
     };
@@ -377,10 +411,15 @@ async fn disconnect_device(state: State<'_, AppState>) -> Result<ConnectionSnaps
         .complete_session(&active.handle.session_id, &ended_at)
         .map_err(|error| AppError::storage(error.to_string()))?;
     clear_rollback_journal(&state.rollback_path)?;
+    *state.active_connection.lock().await = None;
     Ok(disconnected_snapshot())
 }
 
-fn pending_rollback(state: State<'_, AppState>) -> Result<Option<RollbackJournal>, AppError> {
+async fn pending_rollback(state: State<'_, AppState>) -> Result<Option<RollbackJournal>, AppError> {
+    let _operation = state.connection_operation.lock().await;
+    if state.active_connection.lock().await.is_some() {
+        return Ok(None);
+    }
     load_rollback_journal(&state.rollback_path)
 }
 
@@ -388,6 +427,13 @@ async fn recover_pending_rollback(
     state: State<'_, AppState>,
 ) -> Result<Vec<ConnectionDiagnostic>, AppError> {
     let _operation = state.connection_operation.lock().await;
+    if state.active_connection.lock().await.is_some() {
+        return Err(AppError::new(
+            "rollback_capture_active",
+            "Disconnect the active capture before recovering an interrupted connection.",
+            true,
+        ));
+    }
     let Some(journal) = load_rollback_journal(&state.rollback_path)? else {
         return Ok(Vec::new());
     };

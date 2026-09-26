@@ -12,11 +12,14 @@ Date: 2026-09-26. This record covers the source-built localhost implementation o
 - The Codex in-app browser rendered all nine local routes. Direct requests to each route returned HTTP 200; unknown API paths returned structured HTTP 404. Browser back and refresh preserved the route. Tab focus reached the navigation and Return activated Traffic. The Traffic list and inspector changed from two columns at 1440 px to one at 520 px. All nine routes were checked for page-level horizontal overflow at 520 px and 375 px; none overflowed. The dark UI and empty states were visually inspected.
 - A synthetic onboarding step persisted across service restart. A synthetic session imported into a disposable database appeared in Workspace and remained visible after refresh.
 - A synthetic import bundle containing a secret environment value and fake Keychain reference reported one omitted secret. The subsequent export contained neither value nor reference. The Settings browser export produced a download confirmation.
+- With a disposable `adb` shim and native `mitmdump`, concurrent HTTP connect requests produced exactly one active connection and one `connection_already_active` error. A failed proxy read stopped capture without leaving a rollback journal. A failed proxy restore retained the active connection and journal for retry; retry restored the original fake proxy. While capture was active, the journal was hidden from the pending-recovery command and recovery was rejected until disconnect. No real device settings were changed.
+- In the same disposable setup, SIGKILL preserved the pending rollback journal. Restart exposed that journal, blocked a new capture, and restored the original fake proxy through recovery. SIGTERM during active capture restored the proxy and closed the UI and capture listeners, then removed the journal and process lock. These checks do not establish behavior on a real emulator.
+- A protected SQLite backup and body-store copy of the owner's existing data opened in the localhost service. Eight historical list commands returned the expected record counts before and after restart, and SQLite `quick_check` passed. The temporary copy was removed; the owner's data directory was not modified.
 
 ## Still required for release
 
 - Owner-led iOS Simulator and Android Emulator capture, certificate trust, Replay, SDK correlation, mocking, breakpoints, and proxy rollback after normal and forced stops.
-- Real two-tab connection races with a booted runtime and an existing-data migration using a backup of the owner's application data.
+- Real two-tab connection races with a booted runtime, plus an owner-led run against the shared application data directory after closing the historical app.
 - Visual and keyboard checks in macOS light appearance and the full narrow/wide UI across the nine areas.
 - Optional AI preview and send with a configured provider. The code retains the preview fingerprint check, but no external request was sent during this pass.
 
