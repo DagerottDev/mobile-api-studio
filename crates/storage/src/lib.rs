@@ -1,5 +1,8 @@
 mod detail;
+mod import;
 mod workflow;
+
+pub use import::{ImportedFlow, ImportedSession, WorkspaceReplacement};
 
 use core_model::{CaptureSession, FlowSource, FlowSummary, SessionStatus};
 use rusqlite::{params, Connection};

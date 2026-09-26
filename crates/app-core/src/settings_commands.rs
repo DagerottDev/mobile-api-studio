@@ -11,6 +11,7 @@ use device_ios::IosDeviceProvider;
 use secret_store::SecretStore;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs};
+use storage::{ImportedFlow, ImportedSession, WorkspaceReplacement};
 use workspace_core::{ConnectionDoctorReport, DoctorCheck, DoctorStatus};
 
 const PORTABLE_BUNDLE_VERSION: u16 = 2;
@@ -411,6 +412,7 @@ pub async fn import_workspace(
         ));
     }
     validate_bundle_bodies(&bundle)?;
+    let imported_at = now_epoch_millis()?;
 
     if matches!(mode, ImportMode::Replace) {
         validate_replace_references(&bundle)?;
@@ -421,10 +423,18 @@ pub async fn import_workspace(
                 true,
             ));
         }
-        clear_workspace(&state)?;
+        let replacement = prepare_replacement(&bundle, &state, &imported_at)?;
+        let old_secret_refs = state
+            .database
+            .replace_workspace(&replacement)
+            .map_err(storage_error)?;
+        let secret_store = SecretStore;
+        for reference in old_secret_refs {
+            let _ = secret_store.delete(&reference);
+        }
+        return Ok(import_summary(&bundle));
     }
 
-    let imported_at = now_epoch_millis()?;
     let mut flow_count = 0usize;
     for portable_session in &bundle.sessions {
         let mut session = portable_session.session.clone();
@@ -518,6 +528,92 @@ pub async fn import_workspace(
     })
 }
 
+fn prepare_replacement(
+    bundle: &PortableWorkspaceBundle,
+    state: &State<'_, AppState>,
+    imported_at: &str,
+) -> Result<WorkspaceReplacement, AppError> {
+    let mut sessions = Vec::with_capacity(bundle.sessions.len());
+    for portable_session in &bundle.sessions {
+        let mut session = portable_session.session.clone();
+        if session.status == SessionStatus::Active {
+            session.status = SessionStatus::Interrupted;
+            if session.ended_at.is_none() {
+                session.ended_at = Some(imported_at.to_owned());
+            }
+        }
+        let mut flows = Vec::with_capacity(portable_session.flows.len());
+        for portable_flow in &portable_session.flows {
+            let mut detail = portable_flow.detail.clone();
+            if let Some(detail) = detail.as_mut() {
+                restore_body(
+                    state,
+                    detail
+                        .request
+                        .as_mut()
+                        .and_then(|request| request.body.as_mut()),
+                    portable_flow.request_body_base64.as_deref(),
+                )?;
+                restore_body(
+                    state,
+                    detail
+                        .response
+                        .as_mut()
+                        .and_then(|response| response.body.as_mut()),
+                    portable_flow.response_body_base64.as_deref(),
+                )?;
+                detail.summary.session_id = Some(session.id.clone());
+            }
+            let mut summary = detail
+                .as_ref()
+                .map(|detail| detail.summary.clone())
+                .unwrap_or_else(|| portable_flow.summary.clone());
+            summary.session_id = Some(session.id.clone());
+            flows.push(ImportedFlow { summary, detail });
+        }
+        sessions.push(ImportedSession { session, flows });
+    }
+    let environment_variables = bundle
+        .environment_variables
+        .iter()
+        .cloned()
+        .map(|mut variable| {
+            if variable.is_secret {
+                variable.value = None;
+                variable.secret_ref = None;
+            }
+            variable
+        })
+        .collect();
+    Ok(WorkspaceReplacement {
+        sessions,
+        collections: bundle.collections.clone(),
+        saved_requests: bundle.saved_requests.clone(),
+        environments: bundle.environments.clone(),
+        environment_variables,
+    })
+}
+
+fn import_summary(bundle: &PortableWorkspaceBundle) -> ImportSummary {
+    ImportSummary {
+        sessions: bundle.sessions.len(),
+        flows: bundle
+            .sessions
+            .iter()
+            .map(|session| session.flows.len())
+            .sum(),
+        collections: bundle.collections.len(),
+        saved_requests: bundle.saved_requests.len(),
+        environments: bundle.environments.len(),
+        variables: bundle.environment_variables.len(),
+        secret_values_omitted: bundle
+            .environment_variables
+            .iter()
+            .filter(|variable| variable.is_secret)
+            .count(),
+    }
+}
+
 fn validate_bundle_bodies(bundle: &PortableWorkspaceBundle) -> Result<(), AppError> {
     for session in &bundle.sessions {
         for flow in &session.flows {
@@ -577,42 +673,6 @@ fn validate_replace_references(bundle: &PortableWorkspaceBundle) -> Result<(), A
                 true,
             ));
         }
-    }
-    Ok(())
-}
-
-fn clear_workspace(state: &State<'_, AppState>) -> Result<(), AppError> {
-    let secret_store = SecretStore;
-    for environment in state.database.list_environments().map_err(storage_error)? {
-        for variable in state
-            .database
-            .list_environment_variables(&environment.id)
-            .map_err(storage_error)?
-        {
-            if let Some(reference) = variable.secret_ref.as_deref() {
-                let _ = secret_store.delete(reference);
-            }
-        }
-        state
-            .database
-            .delete_environment(&environment.id)
-            .map_err(storage_error)?;
-    }
-    for collection in state.database.list_collections().map_err(storage_error)? {
-        state
-            .database
-            .delete_collection(&collection.id)
-            .map_err(storage_error)?;
-    }
-    for session in state
-        .database
-        .list_sessions(100_000)
-        .map_err(storage_error)?
-    {
-        state
-            .database
-            .delete_session(&session.id)
-            .map_err(storage_error)?;
     }
     Ok(())
 }
@@ -916,6 +976,135 @@ mod tests {
                     .unwrap_err();
                 assert_eq!(error.code, "bundle_reference_missing");
                 assert_eq!(state.database.list_sessions(10).unwrap()[0].id, original.id);
+
+                let duplicate_name_bundle = PortableWorkspaceBundle {
+                    bundle_version: PORTABLE_BUNDLE_VERSION,
+                    exported_at: "5".into(),
+                    sessions: vec![],
+                    collections: vec![],
+                    saved_requests: vec![],
+                    environments: vec![
+                        Environment {
+                            schema_version: SCHEMA_VERSION,
+                            id: "first-environment".into(),
+                            name: "Duplicate".into(),
+                            is_active: false,
+                            created_at: "5".into(),
+                            updated_at: "5".into(),
+                        },
+                        Environment {
+                            schema_version: SCHEMA_VERSION,
+                            id: "second-environment".into(),
+                            name: "duplicate".into(),
+                            is_active: false,
+                            created_at: "5".into(),
+                            updated_at: "5".into(),
+                        },
+                    ],
+                    environment_variables: vec![],
+                };
+                assert!(
+                    import_workspace(duplicate_name_bundle, ImportMode::Replace, State(&state))
+                        .await
+                        .is_err()
+                );
+                assert_eq!(state.database.list_sessions(10).unwrap()[0].id, original.id);
+                assert!(state.database.list_environments().unwrap().is_empty());
+
+                let replacement = CaptureSession {
+                    id: "replacement-session".into(),
+                    name: "Imported session".into(),
+                    ..original.clone()
+                };
+                let valid_bundle = PortableWorkspaceBundle {
+                    bundle_version: PORTABLE_BUNDLE_VERSION,
+                    exported_at: "6".into(),
+                    sessions: vec![PortableSession {
+                        session: replacement.clone(),
+                        flows: vec![PortableFlow {
+                            summary: FlowSummary::fixture(
+                                "replacement-flow",
+                                "GET",
+                                "example.test",
+                                "/new",
+                                200,
+                                1,
+                                0,
+                                "6",
+                            ),
+                            detail: None,
+                            request_body_base64: None,
+                            response_body_base64: None,
+                        }],
+                    }],
+                    collections: vec![SavedCollection {
+                        schema_version: SCHEMA_VERSION,
+                        id: "replacement-collection".into(),
+                        name: "Imported collection".into(),
+                        description: None,
+                        sort_order: 0,
+                        created_at: "6".into(),
+                        updated_at: "6".into(),
+                    }],
+                    saved_requests: vec![SavedRequest {
+                        schema_version: SCHEMA_VERSION,
+                        id: "replacement-request".into(),
+                        collection_id: "replacement-collection".into(),
+                        name: "Imported request".into(),
+                        method: "GET".into(),
+                        url: "https://example.test/new".into(),
+                        headers: vec![],
+                        body: None,
+                        source_flow_id: None,
+                        sort_order: 0,
+                        created_at: "6".into(),
+                        updated_at: "6".into(),
+                    }],
+                    environments: vec![Environment {
+                        schema_version: SCHEMA_VERSION,
+                        id: "replacement-environment".into(),
+                        name: "Imported environment".into(),
+                        is_active: true,
+                        created_at: "6".into(),
+                        updated_at: "6".into(),
+                    }],
+                    environment_variables: vec![EnvironmentVariable {
+                        schema_version: SCHEMA_VERSION,
+                        id: "replacement-variable".into(),
+                        environment_id: "replacement-environment".into(),
+                        key: "TOKEN".into(),
+                        value: Some("must-not-import".into()),
+                        is_secret: true,
+                        secret_ref: Some("must-not-import".into()),
+                        enabled: true,
+                        sort_order: 0,
+                    }],
+                };
+                let result = import_workspace(valid_bundle, ImportMode::Replace, State(&state))
+                    .await
+                    .unwrap();
+                assert_eq!(result.sessions, 1);
+                assert_eq!(result.flows, 1);
+                assert_eq!(result.secret_values_omitted, 1);
+                assert_eq!(
+                    state.database.list_sessions(10).unwrap()[0].id,
+                    replacement.id
+                );
+                assert_eq!(
+                    state.database.list_flows(10).unwrap()[0]
+                        .session_id
+                        .as_deref(),
+                    Some(replacement.id.as_str())
+                );
+                assert_eq!(state.database.list_collections().unwrap().len(), 1);
+                assert_eq!(state.database.list_saved_requests(None).unwrap().len(), 1);
+                let variables = state
+                    .database
+                    .list_environment_variables("replacement-environment")
+                    .unwrap();
+                assert_eq!(variables.len(), 1);
+                assert_eq!(variables[0].value, None);
+                assert_eq!(variables[0].secret_ref, None);
 
                 drop(state);
                 fs::remove_dir_all(data_dir).unwrap();
