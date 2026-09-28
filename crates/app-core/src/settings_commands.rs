@@ -1,6 +1,6 @@
-use super::{now_epoch_millis, AppState};
+use super::{AppState, now_epoch_millis};
 use crate::State;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use capture_core::CaptureEngine;
 use core_model::{
     AppError, BodyRef, CaptureSession, Environment, EnvironmentVariable, FlowDetail, FlowSummary,
@@ -14,7 +14,7 @@ use std::{collections::HashSet, fs};
 use storage::{ImportedFlow, ImportedSession, WorkspaceReplacement};
 use workspace_core::{ConnectionDoctorReport, DoctorCheck, DoctorStatus};
 
-const PORTABLE_BUNDLE_VERSION: u16 = 2;
+const PORTABLE_BUNDLE_VERSION: u16 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -401,15 +401,34 @@ pub async fn import_workspace(
     } else {
         None
     };
-    if bundle.bundle_version != PORTABLE_BUNDLE_VERSION {
+    if bundle.bundle_version != 2 && bundle.bundle_version != PORTABLE_BUNDLE_VERSION {
         return Err(AppError::new(
             "unsupported_bundle_version",
             format!(
-                "This build supports workspace bundle version {PORTABLE_BUNDLE_VERSION}, received {}.",
+                "This build supports workspace bundle versions 2 and {PORTABLE_BUNDLE_VERSION}, received {}.",
                 bundle.bundle_version
             ),
             true,
         ));
+    }
+    for imported in &bundle.sessions {
+        if imported
+            .session
+            .capture_target
+            .as_ref()
+            .is_some_and(|target| target.schema_version != 1)
+            || imported
+                .session
+                .capture_mode
+                .as_ref()
+                .is_some_and(|mode| mode.schema_version != 1)
+        {
+            return Err(AppError::new(
+                "unsupported_capture_metadata_version",
+                "This workspace contains unsupported capture metadata.",
+                true,
+            ));
+        }
     }
     validate_bundle_bodies(&bundle)?;
     let imported_at = now_epoch_millis()?;
@@ -761,7 +780,7 @@ fn storage_error(error: storage::StorageError) -> AppError {
 mod tests {
     use super::*;
     use capture_core::CaptureHandle;
-    use core_model::{HeaderValue, RequestDetail, ResponseDetail, Timing, SCHEMA_VERSION};
+    use core_model::{HeaderValue, RequestDetail, ResponseDetail, SCHEMA_VERSION, Timing};
 
     #[test]
     fn export_redacts_known_secret_headers_even_when_unmarked() {
@@ -850,9 +869,17 @@ mod tests {
                         listen_host: "127.0.0.1".into(),
                         listen_port: 8181,
                     },
-                    device_id: "ios:test-device".into(),
+                    device_id: Some("ios:test-device".into()),
+                    target: core_model::CaptureTarget {
+                        schema_version: core_model::SCHEMA_VERSION,
+                        kind: core_model::CaptureTargetKind::IosSimulator {
+                            device_id: "ios:test-device".into(),
+                        },
+                    },
                     strategy: "ios_manual_proxy".into(),
                     previous_android_proxy: None,
+                    lan_guard: None,
+                    sdk_guard: None,
                 });
                 let active_report = connection_doctor(State(&state)).await.unwrap();
                 assert!(!active_report.pending_rollback);
@@ -893,6 +920,8 @@ mod tests {
                     connection_strategy: None,
                     capture_engine: None,
                     notes: None,
+                    capture_target: None,
+                    capture_mode: None,
                 };
                 state.database.create_session(&original).unwrap();
 

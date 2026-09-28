@@ -141,6 +141,8 @@ pub async fn invoke(command: &str, args: Value, state: &AppState) -> Result<Valu
         }
         "health" => output(crate::health(State(state))),
         "list_devices" => output(crate::list_devices()),
+        "list_mac_processes" => output(crate::list_mac_processes()?),
+        "list_lan_interfaces" => output(crate::list_lan_interfaces()?),
         "list_flows" => output(crate::list_flows(State(state))?),
         "list_sessions" => output(crate::list_sessions(State(state))?),
         "current_connection" => output(crate::current_connection(State(state)).await?),
@@ -148,6 +150,11 @@ pub async fn invoke(command: &str, args: Value, state: &AppState) -> Result<Valu
             let device_id = input(&args, "deviceId")?;
             let session_name = input(&args, "sessionName")?;
             output(crate::connect_device(device_id, session_name, State(state)).await?)
+        }
+        "connect_capture_target" => {
+            let target = input(&args, "target")?;
+            let session_name = input(&args, "sessionName")?;
+            output(crate::connect_capture_target(target, session_name, State(state)).await?)
         }
         "disconnect_device" => output(crate::disconnect_device(State(state)).await?),
         "pending_rollback" => output(crate::pending_rollback(State(state)).await?),

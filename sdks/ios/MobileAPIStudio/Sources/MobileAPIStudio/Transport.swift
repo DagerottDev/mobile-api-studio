@@ -3,9 +3,11 @@ import Foundation
 internal final class MobileAPIStudioTransport: @unchecked Sendable {
     private let session: URLSession
     private var endpoint: URL
+    private let pairingToken: String?
 
-    init(baseURL: URL) {
+    init(baseURL: URL, pairingToken: String?) {
         self.endpoint = baseURL.appendingPathComponent("v1/events")
+        self.pairingToken = pairingToken
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = []
         configuration.connectionProxyDictionary = [:]
@@ -33,6 +35,7 @@ internal final class MobileAPIStudioTransport: @unchecked Sendable {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let pairingToken { request.setValue(pairingToken, forHTTPHeaderField: "X-MAS-Pairing-Token") }
         request.setValue(String(body.count), forHTTPHeaderField: "Content-Length")
         request.httpBody = body
         session.dataTask(with: request).resume()

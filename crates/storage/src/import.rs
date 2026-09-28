@@ -46,8 +46,18 @@ impl Database {
 
         for imported in &replacement.sessions {
             let session = &imported.session;
+            let capture_target_json = session
+                .capture_target
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
+            let capture_mode_json = session
+                .capture_mode
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
             transaction.execute(
-                "INSERT INTO sessions (id, schema_version, name, status, started_at, ended_at, device_id, app_id, connection_strategy, capture_engine, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO sessions (id, schema_version, name, status, started_at, ended_at, device_id, app_id, connection_strategy, capture_engine, notes, capture_target_json, capture_mode_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     &session.id,
                     i64::from(session.schema_version),
@@ -60,6 +70,8 @@ impl Database {
                     &session.connection_strategy,
                     &session.capture_engine,
                     &session.notes,
+                    capture_target_json,
+                    capture_mode_json,
                 ],
             )?;
             for imported_flow in &imported.flows {

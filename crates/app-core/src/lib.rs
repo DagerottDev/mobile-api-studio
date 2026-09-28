@@ -12,11 +12,12 @@ mod sidecar_commands;
 mod workspace_commands;
 
 use ai_storage::AiDatabase;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use capture_core::{CaptureConfig, CaptureEngine, CaptureHandle};
 use capture_mitm::MitmDumpEngine;
 use core_model::{
-    AppError, CaptureSession, ConnectionDiagnostic, Device, DevicePlatform, FlowSummary,
-    SessionStatus, SCHEMA_VERSION,
+    AppError, CaptureMode, CaptureModeKind, CaptureSession, CaptureTarget, CaptureTargetKind,
+    ConnectionDiagnostic, Device, DevicePlatform, FlowSummary, SCHEMA_VERSION, SessionStatus,
 };
 use device_android::AndroidDeviceProvider;
 use device_ios::IosDeviceProvider;
@@ -27,17 +28,25 @@ use serde::{Deserialize, Serialize};
 use std::ops::Deref;
 use std::{
     fs,
+    io::Read,
+    net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
+    process::Command,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 use storage::{BodyStore, Database};
 use tokio::{
+    io::copy_bidirectional,
+    net::{TcpListener, TcpStream},
     sync::Mutex,
-    time::{sleep, Duration},
+    task::{JoinHandle, JoinSet},
+    time::{Duration, sleep},
 };
 
 const DEFAULT_CAPTURE_PORT: u16 = 8181;
+const DEVICE_CAPTURE_PORT: u16 = 8183;
+const DEVICE_SDK_PORT: u16 = 8184;
 
 #[derive(Clone, Copy)]
 pub struct State<'a, T>(&'a T);
@@ -64,9 +73,33 @@ struct AppState {
 #[derive(Debug, Clone)]
 struct ActiveConnection {
     handle: CaptureHandle,
-    device_id: String,
+    device_id: Option<String>,
+    target: CaptureTarget,
     strategy: String,
     previous_android_proxy: Option<String>,
+    lan_guard: Option<LanGuard>,
+    sdk_guard: Option<LanGuard>,
+}
+
+#[derive(Debug, Clone)]
+struct LanGuard {
+    host: String,
+    port: u16,
+    task: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MacProcess {
+    pid: u32,
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LanInterface {
+    name: String,
+    address: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,6 +118,7 @@ struct ConnectionSnapshot {
     strategy: Option<String>,
     proxy_host: Option<String>,
     proxy_port: Option<u16>,
+    capture_target: Option<CaptureTarget>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -92,6 +126,7 @@ struct ConnectionSnapshot {
 struct ConnectDeviceResult {
     connection: ConnectionSnapshot,
     diagnostics: Vec<ConnectionDiagnostic>,
+    pairing_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +210,119 @@ fn list_devices() -> DeviceDiscoveryPayload {
     }
 }
 
+fn list_mac_processes() -> Result<Vec<MacProcess>, AppError> {
+    if !cfg!(target_os = "macos") {
+        return Ok(Vec::new());
+    }
+    let output = Command::new("ps")
+        .args(["-x", "-o", "pid=", "-o", "comm="])
+        .output()
+        .map_err(|error| AppError::new("process_discovery_failed", error.to_string(), true))?;
+    if !output.status.success() {
+        return Err(AppError::new(
+            "process_discovery_failed",
+            String::from_utf8_lossy(&output.stderr),
+            true,
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.trim().splitn(2, char::is_whitespace);
+            let pid = parts.next()?.parse::<u32>().ok()?;
+            let command = parts.next()?.trim();
+            let name = Path::new(command).file_name()?.to_str()?.to_owned();
+            (pid > 0 && !name.is_empty()).then_some(MacProcess { pid, name })
+        })
+        .take(1_024)
+        .collect())
+}
+
+fn list_lan_interfaces() -> Result<Vec<LanInterface>, AppError> {
+    if !cfg!(target_os = "macos") {
+        return Ok(Vec::new());
+    }
+    let output = Command::new("ifconfig")
+        .arg("-l")
+        .output()
+        .map_err(|error| AppError::new("interface_discovery_failed", error.to_string(), true))?;
+    if !output.status.success() {
+        return Err(AppError::new(
+            "interface_discovery_failed",
+            String::from_utf8_lossy(&output.stderr),
+            true,
+        ));
+    }
+    let mut interfaces = Vec::new();
+    for name in String::from_utf8_lossy(&output.stdout).split_whitespace() {
+        if name == "lo0" {
+            continue;
+        }
+        let Ok(address) = Command::new("ipconfig").args(["getifaddr", name]).output() else {
+            continue;
+        };
+        if !address.status.success() {
+            continue;
+        }
+        let address = String::from_utf8_lossy(&address.stdout).trim().to_owned();
+        if address.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_private()) {
+            interfaces.push(LanInterface {
+                name: name.to_owned(),
+                address,
+            });
+        }
+    }
+    Ok(interfaces)
+}
+
+fn new_pairing_token() -> Result<String, AppError> {
+    let mut bytes = [0_u8; 32];
+    fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .map_err(|error| AppError::new("pairing_token_failed", error.to_string(), true))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+impl LanGuard {
+    async fn start(interface_ip: Ipv4Addr, paired_ip: Ipv4Addr, port: u16, upstream_port: u16) -> Result<Self, AppError> {
+        let listener = TcpListener::bind((interface_ip, port))
+            .await
+            .map_err(|error| AppError::new("lan_proxy_bind_failed", error.to_string(), true))?;
+        let port = listener.local_addr().map_err(|error| AppError::new("lan_proxy_bind_failed", error.to_string(), true))?.port();
+        let task = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
+            loop {
+                let Ok((mut client, peer)) = listener.accept().await else {
+                    break;
+                };
+                while connections.try_join_next().is_some() {}
+                if peer.ip() != IpAddr::V4(paired_ip) || connections.len() >= 256 {
+                    continue;
+                }
+                connections.spawn(async move {
+                    if let Ok(mut upstream) =
+                        TcpStream::connect((Ipv4Addr::LOCALHOST, upstream_port)).await
+                    {
+                        let _ = copy_bidirectional(&mut client, &mut upstream).await;
+                    }
+                });
+            }
+        });
+        Ok(Self {
+            host: interface_ip.to_string(),
+            port,
+            task: Arc::new(Mutex::new(Some(task))),
+        })
+    }
+
+    async fn stop(&self) {
+        if let Some(task) = self.task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
 fn list_flows(state: State<'_, AppState>) -> Result<Vec<FlowSummary>, AppError> {
     state
         .database
@@ -195,6 +343,228 @@ async fn current_connection(state: State<'_, AppState>) -> Result<ConnectionSnap
         .as_ref()
         .map(connection_snapshot)
         .unwrap_or_else(disconnected_snapshot))
+}
+
+async fn connect_capture_target(
+    target: CaptureTarget,
+    session_name: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ConnectDeviceResult, AppError> {
+    if target.schema_version != SCHEMA_VERSION {
+        return Err(AppError::new(
+            "unsupported_capture_target_version",
+            "Unsupported capture target version.",
+            true,
+        ));
+    }
+    match &target.kind {
+        CaptureTargetKind::IosSimulator { device_id } if device_id.starts_with("ios:") => {
+            return connect_device(device_id.clone(), session_name, state).await;
+        }
+        CaptureTargetKind::AndroidEmulator { device_id } if device_id.starts_with("android:") => {
+            return connect_device(device_id.clone(), session_name, state).await;
+        }
+        CaptureTargetKind::IosSimulator { .. } | CaptureTargetKind::AndroidEmulator { .. } => {
+            return Err(AppError::new(
+                "invalid_capture_target",
+                "The selected device type and ID do not match.",
+                true,
+            ));
+        }
+        _ => {}
+    }
+    if !cfg!(target_os = "macos") {
+        return Err(AppError::new(
+            "unsupported_capture_platform",
+            "This capture target currently requires macOS.",
+            true,
+        ));
+    }
+    let _operation = state.connection_operation.lock().await;
+    if state.active_connection.lock().await.is_some() {
+        return Err(AppError::new(
+            "connection_already_active",
+            "Disconnect the active capture session first.",
+            true,
+        ));
+    }
+    if state.rollback_path.exists() {
+        return Err(AppError::new(
+            "pending_connection_rollback",
+            "Recover the previous connection before starting another capture.",
+            true,
+        ));
+    }
+
+    let (mode, strategy, paired_ip, interface_ip) = match &target.kind {
+        CaptureTargetKind::MacAll => (CaptureModeKind::LocalAll, "mac_local_all", None, None),
+        CaptureTargetKind::MacProcess { pid, name } => {
+            let exists = list_mac_processes()?
+                .iter()
+                .any(|process| process.pid == *pid && process.name == *name);
+            if !exists {
+                return Err(AppError::new(
+                    "capture_process_missing",
+                    "The selected process is no longer running. Refresh targets and choose it again.",
+                    true,
+                ));
+            }
+            (
+                CaptureModeKind::LocalProcess { pid: *pid },
+                "mac_local_process",
+                None,
+                None,
+            )
+        }
+        CaptureTargetKind::PhysicalIos { address, interface }
+        | CaptureTargetKind::PhysicalAndroid { address, interface } => {
+            let paired_ip = address.parse::<Ipv4Addr>().map_err(|_| {
+                AppError::new(
+                    "invalid_pair_address",
+                    "Enter the physical device's IPv4 address.",
+                    true,
+                )
+            })?;
+            if !paired_ip.is_private() {
+                return Err(AppError::new(
+                    "invalid_pair_address",
+                    "The paired device must have a private LAN IPv4 address.",
+                    true,
+                ));
+            }
+            let interface_ip = list_lan_interfaces()?
+                .into_iter()
+                .find(|item| &item.name == interface)
+                .ok_or_else(|| {
+                    AppError::new(
+                        "invalid_lan_interface",
+                        "Select an active private LAN interface.",
+                        true,
+                    )
+                })?
+                .address
+                .parse::<Ipv4Addr>()
+                .map_err(|_| {
+                    AppError::new(
+                        "invalid_lan_interface",
+                        "The selected LAN interface has no IPv4 address.",
+                        true,
+                    )
+                })?;
+            if paired_ip == interface_ip {
+                return Err(AppError::new(
+                    "invalid_pair_address",
+                    "The paired address must belong to the device, not this Mac.",
+                    true,
+                ));
+            }
+            (
+                CaptureModeKind::RegularProxy,
+                "physical_lan_proxy",
+                Some(paired_ip),
+                Some(interface_ip),
+            )
+        }
+        _ => unreachable!(),
+    };
+    let timestamp = now_epoch_millis()?;
+    let session_id = format!("session-{timestamp}");
+    let mode = CaptureMode {
+        schema_version: SCHEMA_VERSION,
+        kind: mode,
+    };
+    let handle = state
+        .capture_engine
+        .start(CaptureConfig {
+            session_id: session_id.clone(),
+            listen_host: "127.0.0.1".into(),
+            listen_port: DEFAULT_CAPTURE_PORT,
+            mode: mode.clone(),
+        })
+        .await
+        .map_err(capture_error_to_app_error)?;
+
+    let connection_result: Result<ConnectDeviceResult, AppError> = async {
+        let certificate = wait_for_certificate(&state.capture_engine.certificate_path()).await?;
+        let (sdk_guard, pairing_token) = match (interface_ip, paired_ip) {
+            (Some(interface_ip), Some(paired_ip)) => {
+                let token = new_pairing_token()?;
+                let server = Arc::new(SdkIngestionServer::paired_lan(interface_ip, DEVICE_SDK_PORT, paired_ip, token.clone()));
+                let listener = server.bind().await.map_err(|error| AppError::new(error.code, error.message, true))?;
+                let task = sdk_commands::spawn_sdk_ingestion(state.sdk_database.clone(), server, Some(listener));
+                (Some(LanGuard { host: interface_ip.to_string(), port: DEVICE_SDK_PORT, task: Arc::new(Mutex::new(Some(task))) }), Some(token))
+            }
+            _ => (None, None),
+        };
+        let lan_guard = match (interface_ip, paired_ip) {
+            (Some(interface_ip), Some(paired_ip)) => match LanGuard::start(interface_ip, paired_ip, DEVICE_CAPTURE_PORT, DEFAULT_CAPTURE_PORT).await {
+                Ok(guard) => Some(guard),
+                Err(error) => {
+                    if let Some(guard) = &sdk_guard { guard.stop().await; }
+                    return Err(error);
+                }
+            },
+            _ => None,
+        };
+        let session = CaptureSession {
+            schema_version: SCHEMA_VERSION,
+            id: session_id.clone(),
+            name: sanitize_session_name(session_name.unwrap_or_else(|| format!("Capture {timestamp}"))),
+            status: SessionStatus::Active,
+            started_at: timestamp,
+            ended_at: None,
+            device_id: None,
+            app_id: None,
+            connection_strategy: Some(strategy.into()),
+            capture_engine: Some("mitmdump".into()),
+            notes: None,
+            capture_target: Some(target.clone()),
+            capture_mode: Some(mode),
+        };
+        if let Err(error) = state.database.create_session(&session) {
+            if let Some(guard) = &lan_guard { guard.stop().await; }
+            if let Some(guard) = &sdk_guard { guard.stop().await; }
+            return Err(AppError::storage(error.to_string()));
+        }
+        let active = ActiveConnection {
+            handle: handle.clone(),
+            device_id: None,
+            target: target.clone(),
+            strategy: strategy.into(),
+            previous_android_proxy: None,
+            lan_guard,
+            sdk_guard,
+        };
+        let mut diagnostics = Vec::new();
+        if active.lan_guard.is_some() {
+            diagnostics.push(ConnectionDiagnostic {
+                code: "physical_device_pairing".into(),
+                title: "Set the device's manual proxy".into(),
+                message: format!("Configure this development device to use {}:{}. Only the paired address can connect while this session is active.", active.lan_guard.as_ref().unwrap().host, active.lan_guard.as_ref().unwrap().port),
+                recoverable: true,
+                suggested_action: Some(format!("Install the capture CA from mitm.it while using this proxy, then enable full trust on iOS or development CA trust in the Android app. Configure SDK telemetry separately at http://{}:{DEVICE_SDK_PORT} with the session pairing token. Disable the device proxy when done; Mobile API Studio did not change its settings.", active.lan_guard.as_ref().unwrap().host)),
+            });
+        } else {
+            diagnostics.push(ConnectionDiagnostic {
+                code: "mac_local_capture_trust".into(),
+                title: "Trust the development CA for HTTPS".into(),
+                message: format!("Local capture is active. For HTTPS inspection, trust the certificate at {} for this development Mac.", certificate.display()),
+                recoverable: true,
+                suggested_action: Some("macOS may prompt for local capture permission. Certificate-pinned apps need their own debug configuration.".into()),
+            });
+        }
+        let snapshot = connection_snapshot(&active);
+        *state.active_connection.lock().await = Some(active);
+        Ok(ConnectDeviceResult { connection: snapshot, diagnostics, pairing_token })
+    }.await;
+    if connection_result.is_err() {
+        state
+            .capture_engine
+            .stop(handle)
+            .await
+            .map_err(capture_error_to_app_error)?;
+    }
+    connection_result
 }
 
 async fn connect_device(
@@ -229,6 +599,16 @@ async fn connect_device(
             true,
         ));
     }
+    if !list_devices().devices.iter().any(|device| {
+        device.id == device_id
+            && (device.state.eq_ignore_ascii_case("booted") || device.state == "device")
+    }) {
+        return Err(AppError::new(
+            "capture_device_unavailable",
+            "The selected Simulator or Emulator is no longer available. Refresh devices and try again.",
+            true,
+        ));
+    }
 
     // Android's 10.0.2.2 alias reaches the host loopback interface.
     let listen_host = "127.0.0.1";
@@ -243,6 +623,10 @@ async fn connect_device(
             session_id: session_id.clone(),
             listen_host: listen_host.into(),
             listen_port: DEFAULT_CAPTURE_PORT,
+            mode: CaptureMode {
+                schema_version: SCHEMA_VERSION,
+                kind: CaptureModeKind::RegularProxy,
+            },
         })
         .await
         .map_err(capture_error_to_app_error)?;
@@ -329,6 +713,15 @@ async fn connect_device(
             connection_strategy: Some(strategy.into()),
             capture_engine: Some("mitmdump".into()),
             notes: None,
+            capture_target: Some(CaptureTarget {
+                schema_version: SCHEMA_VERSION,
+                kind: if is_android {
+                    CaptureTargetKind::AndroidEmulator { device_id: device_id.clone() }
+                } else {
+                    CaptureTargetKind::IosSimulator { device_id: device_id.clone() }
+                },
+            }),
+            capture_mode: Some(CaptureMode { schema_version: SCHEMA_VERSION, kind: CaptureModeKind::RegularProxy }),
         };
         state
             .database
@@ -337,15 +730,19 @@ async fn connect_device(
 
         let active = ActiveConnection {
             handle: handle.clone(),
-            device_id: device_id.clone(),
+            device_id: Some(device_id.clone()),
+            target: session.capture_target.clone().expect("new capture session has a target"),
             strategy: strategy.into(),
             previous_android_proxy: previous_android_proxy.clone(),
+            lan_guard: None,
+            sdk_guard: None,
         };
         let snapshot = connection_snapshot(&active);
         *state.active_connection.lock().await = Some(active);
         Ok(ConnectDeviceResult {
             connection: snapshot,
             diagnostics,
+            pairing_token: None,
         })
     }
     .await;
@@ -394,12 +791,22 @@ async fn disconnect_device(state: State<'_, AppState>) -> Result<ConnectionSnaps
     let Some(active) = active else {
         return Ok(disconnected_snapshot());
     };
-    if active.device_id.starts_with("android:") {
+    if let Some(device_id) = active
+        .device_id
+        .as_deref()
+        .filter(|id| id.starts_with("android:"))
+    {
         restore_android_proxy(
             &AndroidDeviceProvider,
-            &active.device_id,
+            device_id,
             active.previous_android_proxy.as_deref(),
         )?;
+    }
+    if let Some(guard) = &active.lan_guard {
+        guard.stop().await;
+    }
+    if let Some(guard) = &active.sdk_guard {
+        guard.stop().await;
     }
     state
         .capture_engine
@@ -473,14 +880,27 @@ fn connection_snapshot(active: &ActiveConnection) -> ConnectionSnapshot {
     ConnectionSnapshot {
         connected: true,
         session_id: Some(active.handle.session_id.clone()),
-        device_id: Some(active.device_id.clone()),
+        device_id: active.device_id.clone(),
         strategy: Some(active.strategy.clone()),
-        proxy_host: Some(if active.device_id.starts_with("android:") {
-            ANDROID_HOST_ALIAS.into()
-        } else {
-            "127.0.0.1".into()
-        }),
-        proxy_port: Some(active.handle.listen_port),
+        proxy_host: active
+            .lan_guard
+            .as_ref()
+            .map(|guard| guard.host.clone())
+            .or_else(|| match &active.target.kind {
+                CaptureTargetKind::AndroidEmulator { .. } => Some(ANDROID_HOST_ALIAS.into()),
+                CaptureTargetKind::IosSimulator { .. } => Some("127.0.0.1".into()),
+                _ => None,
+            }),
+        proxy_port: match active.target.kind {
+            CaptureTargetKind::PhysicalIos { .. } | CaptureTargetKind::PhysicalAndroid { .. } => {
+                active.lan_guard.as_ref().map(|guard| guard.port)
+            }
+            CaptureTargetKind::IosSimulator { .. } | CaptureTargetKind::AndroidEmulator { .. } => {
+                Some(active.handle.listen_port)
+            }
+            _ => None,
+        },
+        capture_target: Some(active.target.clone()),
     }
 }
 
@@ -492,6 +912,7 @@ fn disconnected_snapshot() -> ConnectionSnapshot {
         strategy: None,
         proxy_host: None,
         proxy_port: None,
+        capture_target: None,
     }
 }
 
@@ -663,7 +1084,7 @@ impl CoreService {
             state.capture_engine.clone(),
         );
         let sdk_server = Arc::new(SdkIngestionServer::localhost(SDK_INGESTION_PORT));
-        sdk_commands::spawn_sdk_ingestion(state.sdk_database.clone(), sdk_server);
+        sdk_commands::spawn_sdk_ingestion(state.sdk_database.clone(), sdk_server, None);
         Ok(Self {
             state: Arc::new(state),
         })
@@ -714,5 +1135,41 @@ mod certificate_wait_tests {
                 fs::remove_dir_all(directory).unwrap();
                 assert_eq!(found, certificate);
             });
+    }
+}
+
+#[cfg(test)]
+mod lan_guard_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn paired_guard_forwards_and_disconnect_closes_listener() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let upstream_port = upstream.local_addr().unwrap().port();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = upstream.accept().await.unwrap();
+                let mut request = [0_u8; 4];
+                stream.read_exact(&mut request).await.unwrap();
+                assert_eq!(&request, b"ping");
+                stream.write_all(b"pong").await.unwrap();
+            });
+            let guard = LanGuard::start(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST, 0, upstream_port).await.unwrap();
+            let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, guard.port)).await.unwrap();
+            client.write_all(b"ping").await.unwrap();
+            let mut response = [0_u8; 4];
+            client.read_exact(&mut response).await.unwrap();
+            assert_eq!(&response, b"pong");
+            server.await.unwrap();
+            guard.stop().await;
+            assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, guard.port)).await.is_err());
+
+            let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+            let guard = LanGuard::start(Ipv4Addr::LOCALHOST, Ipv4Addr::new(127, 0, 0, 2), 0, upstream.local_addr().unwrap().port()).await.unwrap();
+            let _unpaired = TcpStream::connect((Ipv4Addr::LOCALHOST, guard.port)).await.unwrap();
+            assert!(tokio::time::timeout(Duration::from_millis(100), upstream.accept()).await.is_err());
+            guard.stop().await;
+        });
     }
 }

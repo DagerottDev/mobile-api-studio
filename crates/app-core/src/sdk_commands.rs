@@ -1,8 +1,8 @@
-use super::{now_epoch_millis, AppState};
+use super::{AppState, now_epoch_millis};
 use crate::State;
 use core_model::AppError;
 use sdk_protocol::{
-    SdkEnvelope, SDK_CORRELATION_HEADER, SDK_EVENT_PATH, SDK_HEALTH_PATH, SDK_INGESTION_PORT,
+    SDK_CORRELATION_HEADER, SDK_EVENT_PATH, SDK_HEALTH_PATH, SDK_INGESTION_PORT, SdkEnvelope,
 };
 use sdk_storage::SdkClientRecord;
 use serde::Serialize;
@@ -226,7 +226,8 @@ pub fn sdk_enrichment_for_flow(
 pub(super) fn spawn_sdk_ingestion(
     database: sdk_storage::SdkDatabase,
     server: std::sync::Arc<sdk_transport::SdkIngestionServer>,
-) {
+    listener: Option<tokio::net::TcpListener>,
+) -> tokio::task::JoinHandle<()> {
     let session_database = storage::Database::open(database.path()).ok();
     let mut receiver = server.subscribe();
     tokio::spawn(async move {
@@ -256,8 +257,11 @@ pub(super) fn spawn_sdk_ingestion(
     });
 
     tokio::spawn(async move {
-        let _ = server.run().await;
-    });
+        let _ = match listener {
+            Some(listener) => server.run_bound(listener).await,
+            None => server.run().await,
+        };
+    })
 }
 
 fn storage_error(error: storage::StorageError) -> AppError {

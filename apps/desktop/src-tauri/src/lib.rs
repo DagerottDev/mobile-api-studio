@@ -14,7 +14,8 @@ use ai_storage::AiDatabase;
 use capture_core::{CaptureConfig, CaptureEngine, CaptureHandle};
 use capture_mitm::MitmDumpEngine;
 use core_model::{
-    AppError, CaptureSession, ConnectionDiagnostic, Device, DevicePlatform, FlowSummary,
+    AppError, CaptureMode, CaptureModeKind, CaptureSession, CaptureTarget, CaptureTargetKind,
+    ConnectionDiagnostic, Device, DevicePlatform, FlowSummary,
     SessionStatus, SCHEMA_VERSION,
 };
 use device_android::AndroidDeviceProvider;
@@ -229,6 +230,7 @@ async fn connect_device(
             session_id: session_id.clone(),
             listen_host: listen_host.into(),
             listen_port: DEFAULT_CAPTURE_PORT,
+            mode: CaptureMode { schema_version: SCHEMA_VERSION, kind: CaptureModeKind::RegularProxy },
         })
         .await
         .map_err(capture_error_to_app_error)?;
@@ -318,6 +320,15 @@ async fn connect_device(
         connection_strategy: Some(strategy.into()),
         capture_engine: Some("mitmdump".into()),
         notes: None,
+        capture_target: Some(CaptureTarget {
+            schema_version: SCHEMA_VERSION,
+            kind: if is_android {
+                CaptureTargetKind::AndroidEmulator { device_id: device_id.clone() }
+            } else {
+                CaptureTargetKind::IosSimulator { device_id: device_id.clone() }
+            },
+        }),
+        capture_mode: Some(CaptureMode { schema_version: SCHEMA_VERSION, kind: CaptureModeKind::RegularProxy }),
     };
     state
         .database

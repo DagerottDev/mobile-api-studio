@@ -1,12 +1,15 @@
 import { invoke } from "../api/invoke";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
+  CaptureTarget,
   ConnectDeviceResult,
   ConnectionDiagnostic,
   ConnectionDoctorReport,
   ConnectionSnapshot,
   Device,
   DeviceDiscoveryPayload,
+  LanInterface,
+  MacProcess,
   RollbackJournal,
 } from "../types";
 
@@ -24,9 +27,16 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionSnapshot>(disconnected);
   const [connectionDiagnostics, setConnectionDiagnostics] = useState<ConnectionDiagnostic[]>([]);
+  const [pairingToken, setPairingToken] = useState<string | null>(null);
   const [pendingRollback, setPendingRollback] = useState<RollbackJournal | null>(null);
   const [doctor, setDoctor] = useState<ConnectionDoctorReport | null>(null);
   const [sessionName, setSessionName] = useState("");
+  const [processes, setProcesses] = useState<MacProcess[]>([]);
+  const [selectedProcessPid, setSelectedProcessPid] = useState<number | null>(null);
+  const [interfaces, setInterfaces] = useState<LanInterface[]>([]);
+  const [selectedInterface, setSelectedInterface] = useState("");
+  const [pairedAddress, setPairedAddress] = useState("");
+  const [physicalPlatform, setPhysicalPlatform] = useState<"ios" | "android">("ios");
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -34,16 +44,22 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [devices, current, rollback, report] = await Promise.all([
+      const [devices, current, rollback, report, discoveredProcesses, discoveredInterfaces] = await Promise.all([
         invoke<DeviceDiscoveryPayload>("list_devices"),
         invoke<ConnectionSnapshot>("current_connection"),
         invoke<RollbackJournal | null>("pending_rollback"),
         invoke<ConnectionDoctorReport>("connection_doctor"),
+        invoke<MacProcess[]>("list_mac_processes").catch(() => []),
+        invoke<LanInterface[]>("list_lan_interfaces").catch(() => []),
       ]);
       setPayload(devices);
       setConnection(current);
       setPendingRollback(rollback);
       setDoctor(report);
+      setProcesses(discoveredProcesses);
+      setSelectedProcessPid((pid) => discoveredProcesses.some((process) => process.pid === pid) ? pid : discoveredProcesses[0]?.pid ?? null);
+      setInterfaces(discoveredInterfaces);
+      setSelectedInterface((name) => discoveredInterfaces.some((item) => item.name === name) ? name : discoveredInterfaces[0]?.name ?? "");
       setSelectedId((existing) => {
         if (current.deviceId && devices.devices.some((device) => device.id === current.deviceId)) {
           return current.deviceId;
@@ -69,7 +85,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
   useEffect(() => {
     if (acting || !sharedConnection) return;
     setConnection(sharedConnection);
-    if (!sharedConnection.connected) setConnectionDiagnostics([]);
+    if (!sharedConnection.connected) { setConnectionDiagnostics([]); setPairingToken(null); }
   }, [sharedConnection]);
 
   const selected = useMemo(
@@ -87,6 +103,28 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
       });
       setConnection(result.connection);
       setConnectionDiagnostics(result.diagnostics);
+      setPairingToken(result.pairingToken ?? null);
+      setPendingRollback(null);
+      setError(null);
+    } catch (value) {
+      const message = formatInvokeError(value);
+      await refresh();
+      setError(message);
+    } finally {
+      setActing(false);
+    }
+  }
+
+  async function connectTarget(target: CaptureTarget) {
+    setActing(true);
+    try {
+      const result = await invoke<ConnectDeviceResult>("connect_capture_target", {
+        target,
+        sessionName: sessionName.trim() || null,
+      });
+      setConnection(result.connection);
+      setConnectionDiagnostics(result.diagnostics);
+      setPairingToken(result.pairingToken ?? null);
       setPendingRollback(null);
       setError(null);
     } catch (value) {
@@ -104,6 +142,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
       const result = await invoke<ConnectionSnapshot>("disconnect_device");
       setConnection(result);
       setConnectionDiagnostics([]);
+      setPairingToken(null);
       setPendingRollback(null);
       setError(null);
     } catch (value) {
@@ -148,6 +187,47 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
           <div><strong>{check.title}</strong><p>{check.detail}</p>{check.action ? <small>{check.action}</small> : null}</div>
         </article>)}</div>
       </section> : null}
+      {error ? <div className="error-banner" role="alert">{error}</div> : null}
+      <section className="connect-grid" aria-label="Additional capture targets">
+        <div className="panel">
+          <div className="panel-heading"><div><strong>Mac capture</strong><span>All traffic or one running process</span></div></div>
+          <div className="selected-device-detail">
+            <p>mitmproxy local capture needs no Mac system proxy change. macOS may ask for permission.</p>
+            <button className="primary wide" onClick={() => void connectTarget({ schemaVersion: 1, type: "mac_all" })} disabled={acting || loading || connection.connected || Boolean(pendingRollback)}>
+              {acting ? "Starting…" : "Capture this Mac"}
+            </button>
+            <label className="field-label" htmlFor="mac-process">Running process</label>
+            <select className="text-input" id="mac-process" value={selectedProcessPid ?? ""} onChange={(event) => setSelectedProcessPid(Number(event.target.value))} disabled={acting || connection.connected}>
+              {processes.length === 0 ? <option value="">No process available</option> : processes.map((process) => <option key={process.pid} value={process.pid}>{process.name} · PID {process.pid}</option>)}
+            </select>
+            <button className="secondary wide" onClick={() => {
+              const process = processes.find((item) => item.pid === selectedProcessPid);
+              if (process) void connectTarget({ schemaVersion: 1, type: "mac_process", pid: process.pid, name: process.name });
+            }} disabled={acting || connection.connected || selectedProcessPid === null || Boolean(pendingRollback)}>
+              Capture selected process
+            </button>
+          </div>
+        </div>
+        <div className="panel">
+          <div className="panel-heading"><div><strong>Physical device</strong><span>Explicit LAN proxy for one paired address</span></div></div>
+          <div className="selected-device-detail">
+            <label className="field-label" htmlFor="physical-platform">Device platform</label>
+            <select className="text-input" id="physical-platform" value={physicalPlatform} onChange={(event) => setPhysicalPlatform(event.target.value as "ios" | "android")} disabled={acting || connection.connected}>
+              <option value="ios">iOS</option><option value="android">Android</option>
+            </select>
+            <label className="field-label" htmlFor="lan-interface">Mac LAN interface</label>
+            <select className="text-input" id="lan-interface" value={selectedInterface} onChange={(event) => setSelectedInterface(event.target.value)} disabled={acting || connection.connected}>
+              {interfaces.length === 0 ? <option value="">No private LAN interface available</option> : interfaces.map((item) => <option key={item.name} value={item.name}>{item.name} · {item.address}</option>)}
+            </select>
+            <label className="field-label" htmlFor="paired-address">Device IPv4 address</label>
+            <input className="text-input" id="paired-address" inputMode="decimal" placeholder="192.168.1.42" value={pairedAddress} onChange={(event) => setPairedAddress(event.target.value)} disabled={acting || connection.connected} />
+            <small>Find the address in the device's Wi-Fi settings. You will set its proxy and development CA manually after starting capture.</small>
+            <button className="primary wide" onClick={() => void connectTarget({ schemaVersion: 1, type: physicalPlatform === "ios" ? "physical_ios" : "physical_android", address: pairedAddress.trim(), interface: selectedInterface })} disabled={acting || connection.connected || !selectedInterface || !pairedAddress.trim() || Boolean(pendingRollback)}>
+              {acting ? "Starting…" : "Enable paired LAN proxy"}
+            </button>
+          </div>
+        </div>
+      </section>
     <section className="connect-grid">
       <div className="panel device-panel">
         <div className="panel-heading">
@@ -159,8 +239,6 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
             Refresh
           </button>
         </div>
-
-        {error ? <div className="error-banner">{error}</div> : null}
 
         {pendingRollback ? (
           <div className="error-banner">
@@ -211,7 +289,17 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
             </div>
           </div>
 
-          {selected ? (
+          {connection.connected && connection.captureTarget && !["ios_simulator", "android_emulator"].includes(connection.captureTarget.type) ? (
+            <div className="selected-device-detail">
+              <h2>{connection.captureTarget.type === "mac_all" ? "This Mac" : connection.captureTarget.type === "mac_process" ? connection.captureTarget.name : "Paired physical device"}</h2>
+              <p>{connection.strategy}</p>
+              {connection.proxyHost ? <div className="capability-row"><span>Device proxy</span><strong>{connection.proxyHost}:{connection.proxyPort}</strong></div> : null}
+              {pairingToken ? <div className="capability-row"><span>SDK pairing token</span><code className="pairing-token">{pairingToken}</code></div> : null}
+              <div className="capability-row"><span>Session</span><strong>{connection.sessionId}</strong></div>
+              <button className="secondary wide" onClick={() => void disconnect()} disabled={acting}>{acting ? "Disconnecting…" : "Disconnect capture"}</button>
+              <button className="primary wide" onClick={onOpenTraffic}>Inspect traffic →</button>
+            </div>
+          ) : selected ? (
             <div className="selected-device-detail">
               <h2>{selected.name}</h2>
               <p>{selected.id}</p>

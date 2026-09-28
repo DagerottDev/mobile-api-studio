@@ -44,7 +44,7 @@ public object MobileAPIStudio {
                 previous
             } else {
                 val nextClientId = loadClientId(appContext, resolved.appId)
-                transport = MobileAPIStudioTransport(resolved.desktopHost, resolved.desktopPort)
+                transport = MobileAPIStudioTransport(resolved.desktopHost, resolved.desktopPort, resolved.pairingToken)
                 clientId = nextClientId
                 previous
             }

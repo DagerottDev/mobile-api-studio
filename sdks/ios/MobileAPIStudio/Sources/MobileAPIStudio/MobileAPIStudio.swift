@@ -160,7 +160,7 @@ private final class MobileAPIStudioState: @unchecked Sendable {
                 inFlight.removeAll()
                 return
             }
-            transport = MobileAPIStudioTransport(baseURL: configuration.desktopBaseURL)
+            transport = MobileAPIStudioTransport(baseURL: configuration.desktopBaseURL, pairingToken: configuration.pairingToken)
             clientID = loadClientID(appID: configuration.appID)
         }
         sendHandshake()

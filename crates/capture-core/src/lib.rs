@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use core_model::{FlowSummary, HeaderValue, Timing};
+use core_model::{CaptureMode, FlowSummary, HeaderValue, Timing};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -9,6 +9,7 @@ pub struct CaptureConfig {
     pub session_id: String,
     pub listen_host: String,
     pub listen_port: u16,
+    pub mode: CaptureMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,7 +95,11 @@ pub enum CaptureEvent {
     FlowUpdated(FlowSummary),
     FlowCompleted(FlowSummary),
     FlowDetailCompleted(CapturedFlow),
-    FlowFailed { flow_id: String, code: String, message: String },
+    FlowFailed {
+        flow_id: String,
+        code: String,
+        message: String,
+    },
     EngineFailed {
         code: String,
         message: String,

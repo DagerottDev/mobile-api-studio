@@ -57,3 +57,8 @@
   color: var(--muted);
   line-height: 1.45;
 }
+
+.pairing-token {
+  overflow-wrap: anywhere;
+  user-select: all;
+}

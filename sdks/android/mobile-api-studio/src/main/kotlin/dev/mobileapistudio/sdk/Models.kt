@@ -7,12 +7,15 @@ import okhttp3.Request
 public data class MobileAPIStudioConfiguration(
     val desktopHost: String = "10.0.2.2",
     val desktopPort: Int = 8182,
+    val pairingToken: String? = null,
     val enabled: Boolean = false,
     val appId: String? = null,
     val appName: String? = null,
     val appVersion: String? = null,
     val appBuild: String? = null,
 ) {
+    override fun toString(): String = "MobileAPIStudioConfiguration(pairingToken=<redacted>)"
+
     internal fun resolved(context: Context): ResolvedConfiguration {
         val packageName = context.packageName
         val packageInfo = runCatching { context.packageManager.getPackageInfo(packageName, 0) }.getOrNull()
@@ -22,6 +25,7 @@ public data class MobileAPIStudioConfiguration(
         return ResolvedConfiguration(
             desktopHost = desktopHost,
             desktopPort = desktopPort,
+            pairingToken = pairingToken,
             enabled = enabled,
             appId = appId ?: packageName,
             appName = appName ?: label ?: packageName,
@@ -36,6 +40,7 @@ public data class MobileAPIStudioConfiguration(
 internal data class ResolvedConfiguration(
     val desktopHost: String,
     val desktopPort: Int,
+    val pairingToken: String?,
     val enabled: Boolean,
     val appId: String,
     val appName: String,
@@ -43,7 +48,9 @@ internal data class ResolvedConfiguration(
     val appBuild: String?,
     val deviceName: String?,
     val osVersion: String?,
-)
+) {
+    override fun toString(): String = "ResolvedConfiguration(pairingToken=<redacted>)"
+}
 
 public data class MobileAPIStudioSource(
     val file: String? = null,

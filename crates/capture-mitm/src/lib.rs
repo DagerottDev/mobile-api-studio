@@ -1,10 +1,10 @@
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use capture_core::{
     CaptureCapabilities, CaptureConfig, CaptureEngine, CaptureError, CaptureEvent, CaptureHandle,
     CaptureLifecycleState, CapturedBody, CapturedFlow, CapturedRequest, CapturedResponse,
 };
-use core_model::{FlowSource, FlowSummary, HeaderValue, Timing, SCHEMA_VERSION};
+use core_model::{CaptureModeKind, FlowSource, FlowSummary, HeaderValue, SCHEMA_VERSION, Timing};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
@@ -17,7 +17,7 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::{Child, Command},
-    sync::{broadcast, Mutex},
+    sync::{Mutex, broadcast},
 };
 
 const EVENT_PREFIX: &str = "MAS_EVENT ";
@@ -56,11 +56,7 @@ impl MitmDumpEngine {
         &self.conf_dir
     }
 
-    async fn spawn_stdout_reader(
-        &self,
-        stdout: tokio::process::ChildStdout,
-        session_id: String,
-    ) {
+    async fn spawn_stdout_reader(&self, stdout: tokio::process::ChildStdout, session_id: String) {
         let sender = self.sender.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -97,9 +93,9 @@ impl MitmDumpEngine {
 #[async_trait]
 impl CaptureEngine for MitmDumpEngine {
     async fn prepare(&self) -> Result<CaptureCapabilities, CaptureError> {
-        let _ = self
-            .sender
-            .send(CaptureEvent::LifecycleChanged(CaptureLifecycleState::Preparing));
+        let _ = self.sender.send(CaptureEvent::LifecycleChanged(
+            CaptureLifecycleState::Preparing,
+        ));
 
         if !self.addon_path.is_file() {
             return Err(CaptureError::new(
@@ -109,9 +105,8 @@ impl CaptureEngine for MitmDumpEngine {
             ));
         }
 
-        fs::create_dir_all(&self.conf_dir).map_err(|error| {
-            CaptureError::new("mitm_confdir_failed", error.to_string(), true)
-        })?;
+        fs::create_dir_all(&self.conf_dir)
+            .map_err(|error| CaptureError::new("mitm_confdir_failed", error.to_string(), true))?;
 
         let output = Command::new(&self.executable)
             .arg("--version")
@@ -151,18 +146,14 @@ impl CaptureEngine for MitmDumpEngine {
 
     async fn start(&self, config: CaptureConfig) -> Result<CaptureHandle, CaptureError> {
         let capabilities = self.prepare().await?;
-        let _ = self
-            .sender
-            .send(CaptureEvent::LifecycleChanged(CaptureLifecycleState::Starting));
+        let _ = self.sender.send(CaptureEvent::LifecycleChanged(
+            CaptureLifecycleState::Starting,
+        ));
 
         let handle_id = format!("mitm-{}", now_epoch_millis());
         let mut command = Command::new(&self.executable);
         command
             .arg("--quiet")
-            .arg("--listen-host")
-            .arg(&config.listen_host)
-            .arg("--listen-port")
-            .arg(config.listen_port.to_string())
             .arg("--set")
             .arg(format!("confdir={}", self.conf_dir.display()))
             .arg("--set")
@@ -173,6 +164,22 @@ impl CaptureEngine for MitmDumpEngine {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+
+        match config.mode.kind {
+            CaptureModeKind::RegularProxy => {
+                command.arg("--mode").arg("regular");
+                command.arg("--listen-host").arg(&config.listen_host);
+                command
+                    .arg("--listen-port")
+                    .arg(config.listen_port.to_string());
+            }
+            CaptureModeKind::LocalAll => {
+                command.arg("--mode").arg("local");
+            }
+            CaptureModeKind::LocalProcess { pid } => {
+                command.arg("--mode").arg(format!("local:{pid}"));
+            }
+        }
 
         let mut child = command.spawn().map_err(|error| {
             CaptureError::new(
@@ -197,7 +204,8 @@ impl CaptureEngine for MitmDumpEngine {
             )
         })?;
 
-        self.spawn_stdout_reader(stdout, config.session_id.clone()).await;
+        self.spawn_stdout_reader(stdout, config.session_id.clone())
+            .await;
         self.spawn_stderr_drain(stderr).await;
         self.children.lock().await.insert(handle_id.clone(), child);
 
@@ -215,9 +223,9 @@ impl CaptureEngine for MitmDumpEngine {
     }
 
     async fn stop(&self, handle: CaptureHandle) -> Result<(), CaptureError> {
-        let _ = self
-            .sender
-            .send(CaptureEvent::LifecycleChanged(CaptureLifecycleState::Stopping));
+        let _ = self.sender.send(CaptureEvent::LifecycleChanged(
+            CaptureLifecycleState::Stopping,
+        ));
 
         let child = self.children.lock().await.remove(&handle.id);
         if let Some(mut child) = child {
@@ -398,7 +406,11 @@ fn normalize_captured_flow(
         schema_version: SCHEMA_VERSION,
         id,
         session_id: Some(session_id.to_string()),
-        source: if mocked { FlowSource::Mock } else { FlowSource::Proxy },
+        source: if mocked {
+            FlowSource::Mock
+        } else {
+            FlowSource::Proxy
+        },
         method: request.method.clone(),
         host: request.host.clone(),
         path: request.path.clone(),

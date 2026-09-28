@@ -5,12 +5,12 @@ mod workflow;
 pub use import::{ImportedFlow, ImportedSession, WorkspaceReplacement};
 
 use core_model::{CaptureSession, FlowSource, FlowSummary, SessionStatus};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
-    io,
+    fs, io,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const MIGRATION_001: &str = r#"
@@ -91,6 +91,12 @@ CREATE INDEX IF NOT EXISTS idx_headers_flow_side
 INSERT OR IGNORE INTO schema_migrations(version) VALUES (1);
 "#;
 
+const MIGRATION_004: &str = r#"
+ALTER TABLE sessions ADD COLUMN capture_target_json TEXT;
+ALTER TABLE sessions ADD COLUMN capture_mode_json TEXT;
+INSERT INTO schema_migrations(version) VALUES (4);
+"#;
+
 #[derive(Debug, Clone)]
 pub struct Database {
     path: PathBuf,
@@ -103,6 +109,34 @@ impl Database {
             fs::create_dir_all(parent)?;
         }
 
+        if path.is_file() {
+            let connection = Connection::open(&path)?;
+            let has_migrations: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
+                [],
+                |row| row.get(0),
+            )?;
+            let migrated: bool = if has_migrations {
+                connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 4)",
+                    [],
+                    |row| row.get(0),
+                )?
+            } else {
+                false
+            };
+            if !migrated {
+                let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+                let backup = format!("{}.pre-capture-targets-{stamp}.bak", path.display());
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&backup)?;
+                }
+                connection.execute("VACUUM INTO ?1", [&backup])?;
+            }
+        }
+
         let database = Self { path };
         database.initialize()?;
         Ok(database)
@@ -112,17 +146,38 @@ impl Database {
         &self.path
     }
 
-    pub fn initialize(&self) -> Result<(), StorageError> {
+    fn initialize(&self) -> Result<(), StorageError> {
         let connection = self.connection()?;
         connection.execute_batch(MIGRATION_001)?;
         drop(connection);
         detail::initialize(self)?;
         workflow::initialize(self)?;
+        let mut connection = self.connection()?;
+        let migrated: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 4)",
+            [],
+            |row| row.get(0),
+        )?;
+        if !migrated {
+            let migration = connection.transaction()?;
+            migration.execute_batch(MIGRATION_004)?;
+            migration.commit()?;
+        }
         Ok(())
     }
 
     pub fn create_session(&self, session: &CaptureSession) -> Result<(), StorageError> {
         let connection = self.connection()?;
+        let capture_target_json = session
+            .capture_target
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let capture_mode_json = session
+            .capture_mode
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         connection.execute(
             r#"
             INSERT INTO sessions (
@@ -136,8 +191,10 @@ impl Database {
                 app_id,
                 connection_strategy,
                 capture_engine,
-                notes
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                notes,
+                capture_target_json,
+                capture_mode_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 status = excluded.status,
@@ -146,7 +203,9 @@ impl Database {
                 app_id = excluded.app_id,
                 connection_strategy = excluded.connection_strategy,
                 capture_engine = excluded.capture_engine,
-                notes = excluded.notes
+                notes = excluded.notes,
+                capture_target_json = excluded.capture_target_json,
+                capture_mode_json = excluded.capture_mode_json
             "#,
             params![
                 &session.id,
@@ -160,6 +219,8 @@ impl Database {
                 &session.connection_strategy,
                 &session.capture_engine,
                 &session.notes,
+                capture_target_json,
+                capture_mode_json,
             ],
         )?;
         Ok(())
@@ -218,7 +279,9 @@ impl Database {
                 app_id,
                 connection_strategy,
                 capture_engine,
-                notes
+                notes,
+                capture_target_json,
+                capture_mode_json
             FROM sessions
             ORDER BY started_at DESC
             LIMIT ?1
@@ -228,6 +291,30 @@ impl Database {
         let rows = statement.query_map([limit as i64], |row| {
             let schema_version: i64 = row.get(0)?;
             let status: String = row.get(3)?;
+            let capture_target_json: Option<String> = row.get(11)?;
+            let capture_mode_json: Option<String> = row.get(12)?;
+            let capture_target = capture_target_json
+                .map(|json| {
+                    serde_json::from_str(&json).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            11,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
+                })
+                .transpose()?;
+            let capture_mode = capture_mode_json
+                .map(|json| {
+                    serde_json::from_str(&json).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            12,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
+                })
+                .transpose()?;
             Ok(CaptureSession {
                 schema_version: schema_version as u16,
                 id: row.get(1)?,
@@ -240,10 +327,13 @@ impl Database {
                 connection_strategy: row.get(8)?,
                 capture_engine: row.get(9)?,
                 notes: row.get(10)?,
+                capture_target,
+                capture_mode,
             })
         })?;
 
-        rows.collect::<Result<Vec<_>, _>>().map_err(StorageError::from)
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::from)
     }
 
     pub fn upsert_flow(&self, flow: &FlowSummary) -> Result<(), StorageError> {
@@ -337,12 +427,14 @@ impl Database {
             })
         })?;
 
-        rows.collect::<Result<Vec<_>, _>>().map_err(StorageError::from)
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StorageError::from)
     }
 
     pub fn is_empty(&self) -> Result<bool, StorageError> {
         let connection = self.connection()?;
-        let count: i64 = connection.query_row("SELECT COUNT(*) FROM flows", [], |row| row.get(0))?;
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM flows", [], |row| row.get(0))?;
         Ok(count == 0)
     }
 
@@ -418,10 +510,78 @@ mod body_hash_tests {
         let store = BodyStore::new(&root).unwrap();
         let non_hex = "g".repeat(64);
         for invalid in ["../../outside", "🔥🔥", non_hex.as_str()] {
-            assert!(matches!(store.read(invalid), Err(StorageError::InvalidBodyHash)));
+            assert!(matches!(
+                store.read(invalid),
+                Err(StorageError::InvalidBodyHash)
+            ));
         }
         let stored = store.put(b"sample body").unwrap();
         assert_eq!(store.read(&stored.sha256).unwrap(), b"sample body");
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod capture_metadata_migration_tests {
+    use super::*;
+    use core_model::{
+        CaptureMode, CaptureModeKind, CaptureTarget, CaptureTargetKind, SCHEMA_VERSION,
+    };
+
+    #[test]
+    fn old_sessions_survive_capture_metadata_migration() {
+        let root = std::env::temp_dir().join(format!(
+            "mas-capture-migration-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("app.db");
+        let old = Connection::open(&path).unwrap();
+        old.execute_batch(MIGRATION_001).unwrap();
+        old.execute(
+            "INSERT INTO sessions (id, name, started_at) VALUES ('old', 'Old session', '1')",
+            [],
+        )
+        .unwrap();
+        drop(old);
+
+        let database = Database::open(&path).unwrap();
+        let old_session = database.list_sessions(10).unwrap().remove(0);
+        assert_eq!(old_session.id, "old");
+        assert!(old_session.capture_target.is_none());
+        assert!(fs::read_dir(&root).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("pre-capture-targets")
+        }));
+
+        let mut current = old_session;
+        current.id = "new".into();
+        current.schema_version = SCHEMA_VERSION;
+        current.capture_target = Some(CaptureTarget {
+            schema_version: 1,
+            kind: CaptureTargetKind::MacAll,
+        });
+        current.capture_mode = Some(CaptureMode {
+            schema_version: 1,
+            kind: CaptureModeKind::LocalAll,
+        });
+        database.create_session(&current).unwrap();
+        assert_eq!(
+            database
+                .list_sessions(10)
+                .unwrap()
+                .into_iter()
+                .find(|session| session.id == "new")
+                .unwrap(),
+            current
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

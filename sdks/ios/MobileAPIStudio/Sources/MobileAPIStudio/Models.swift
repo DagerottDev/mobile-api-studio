@@ -6,6 +6,7 @@ public struct MobileAPIStudioConfiguration: Sendable {
     public var appVersion: String?
     public var appBuild: String?
     public var desktopBaseURL: URL
+    public var pairingToken: String?
     public var enabled: Bool
 
     public init(
@@ -16,6 +17,7 @@ public struct MobileAPIStudioConfiguration: Sendable {
         appVersion: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
         appBuild: String? = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
         desktopBaseURL: URL = URL(string: "http://127.0.0.1:8182")!,
+        pairingToken: String? = nil,
         enabled: Bool = MobileAPIStudio.defaultEnabled
     ) {
         self.appID = appID
@@ -23,6 +25,7 @@ public struct MobileAPIStudioConfiguration: Sendable {
         self.appVersion = appVersion
         self.appBuild = appBuild
         self.desktopBaseURL = desktopBaseURL
+        self.pairingToken = pairingToken
         self.enabled = enabled
     }
 }

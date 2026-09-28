@@ -1,18 +1,29 @@
-use sdk_protocol::{SdkEnvelope, SDK_EVENT_PATH, SDK_HEALTH_PATH};
-use std::{net::{IpAddr, Ipv4Addr, SocketAddr}, sync::Arc};
+use sdk_protocol::{SDK_EVENT_PATH, SDK_HEALTH_PATH, SdkEnvelope};
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     sync::broadcast,
+    task::JoinSet,
 };
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SdkIngestionServer {
     address: SocketAddr,
     sender: broadcast::Sender<SdkEnvelope>,
+    pairing: Option<Pairing>,
+}
+
+#[derive(Clone)]
+struct Pairing {
+    peer: Ipv4Addr,
+    token: String,
 }
 
 impl SdkIngestionServer {
@@ -21,6 +32,16 @@ impl SdkIngestionServer {
         Self {
             address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
             sender,
+            pairing: None,
+        }
+    }
+
+    pub fn paired_lan(address: Ipv4Addr, port: u16, peer: Ipv4Addr, token: String) -> Self {
+        let (sender, _) = broadcast::channel(4_096);
+        Self {
+            address: SocketAddr::new(IpAddr::V4(address), port),
+            sender,
+            pairing: Some(Pairing { peer, token }),
         }
     }
 
@@ -32,16 +53,42 @@ impl SdkIngestionServer {
         self.sender.subscribe()
     }
 
-    pub async fn run(self: Arc<Self>) -> Result<(), SdkTransportError> {
-        let listener = TcpListener::bind(self.address)
+    pub async fn bind(&self) -> Result<TcpListener, SdkTransportError> {
+        TcpListener::bind(self.address)
             .await
-            .map_err(SdkTransportError::bind)?;
+            .map_err(SdkTransportError::bind)
+    }
 
+    pub async fn run(self: Arc<Self>) -> Result<(), SdkTransportError> {
+        let listener = self.bind().await?;
+        self.run_bound(listener).await
+    }
+
+    pub async fn run_bound(
+        self: Arc<Self>,
+        listener: TcpListener,
+    ) -> Result<(), SdkTransportError> {
+        let mut connections = JoinSet::new();
+        let expected_host = listener
+            .local_addr()
+            .map_err(SdkTransportError::bind)?
+            .to_string();
         loop {
-            let (stream, _) = listener.accept().await.map_err(SdkTransportError::accept)?;
+            while connections.try_join_next().is_some() {}
+            let (stream, peer) = listener.accept().await.map_err(SdkTransportError::accept)?;
+            if connections.len() >= 128
+                || self
+                    .pairing
+                    .as_ref()
+                    .is_some_and(|pairing| peer.ip() != IpAddr::V4(pairing.peer))
+            {
+                continue;
+            }
             let sender = self.sender.clone();
-            tokio::spawn(async move {
-                let _ = handle_connection(stream, sender).await;
+            let pairing = self.pairing.clone();
+            let expected_host = expected_host.clone();
+            connections.spawn(async move {
+                let _ = handle_connection(stream, sender, pairing, expected_host).await;
             });
         }
     }
@@ -50,10 +97,20 @@ impl SdkIngestionServer {
 async fn handle_connection(
     mut stream: TcpStream,
     sender: broadcast::Sender<SdkEnvelope>,
+    pairing: Option<Pairing>,
+    expected_host: String,
 ) -> Result<(), SdkTransportError> {
     let request = read_request(&mut stream).await?;
 
-    if !request.host_is_local || request.has_origin {
+    let host_allowed = if pairing.is_some() {
+        request.host.as_deref() == Some(expected_host.as_str())
+    } else {
+        matches!(
+            request.host.as_deref(),
+            Some("127.0.0.1:8182" | "localhost:8182" | "10.0.2.2:8182")
+        )
+    };
+    if !host_allowed || request.has_origin {
         return write_response(
             &mut stream,
             403,
@@ -63,24 +120,37 @@ async fn handle_connection(
         .await;
     }
 
+    if let Some(pairing) = &pairing {
+        if !request
+            .pairing_token
+            .as_deref()
+            .is_some_and(|token| constant_time_eq(token, &pairing.token))
+        {
+            return write_response(
+                &mut stream,
+                401,
+                "Unauthorized",
+                br#"{"error":"invalid_pairing_token"}"#,
+            )
+            .await;
+        }
+    }
+
     if request.method == "GET" && request.path == SDK_HEALTH_PATH {
         return write_response(&mut stream, 200, "OK", br#"{"status":"ok"}"#).await;
     }
 
     if request.method != "POST" || request.path != SDK_EVENT_PATH {
-        return write_response(
-            &mut stream,
-            404,
-            "Not Found",
-            br#"{"error":"not_found"}"#,
-        )
-        .await;
+        return write_response(&mut stream, 404, "Not Found", br#"{"error":"not_found"}"#).await;
     }
 
     let envelope: SdkEnvelope = match serde_json::from_slice(&request.body) {
         Ok(value) => value,
         Err(error) => {
-            let body = format!("{{\"error\":\"invalid_json\",\"message\":{}}}", json_string(&error.to_string()));
+            let body = format!(
+                "{{\"error\":\"invalid_json\",\"message\":{}}}",
+                json_string(&error.to_string())
+            );
             return write_response(&mut stream, 400, "Bad Request", body.as_bytes()).await;
         }
     };
@@ -94,9 +164,12 @@ async fn handle_connection(
         return write_response(&mut stream, 422, "Unprocessable Entity", body.as_bytes()).await;
     }
 
-    sender
-        .send(envelope)
-        .map_err(|_| SdkTransportError::new("sdk_ingestion_unavailable", "No SDK event consumer is available"))?;
+    sender.send(envelope).map_err(|_| {
+        SdkTransportError::new(
+            "sdk_ingestion_unavailable",
+            "No SDK event consumer is available",
+        )
+    })?;
 
     write_response(&mut stream, 202, "Accepted", br#"{"accepted":true}"#).await
 }
@@ -105,7 +178,8 @@ struct HttpRequest {
     method: String,
     path: String,
     body: Vec<u8>,
-    host_is_local: bool,
+    host: Option<String>,
+    pairing_token: Option<String>,
     has_origin: bool,
 }
 
@@ -122,7 +196,10 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, SdkTranspor
             break index;
         }
         let mut chunk = [0_u8; 4096];
-        let read = stream.read(&mut chunk).await.map_err(SdkTransportError::read)?;
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .map_err(SdkTransportError::read)?;
         if read == 0 {
             return Err(SdkTransportError::new(
                 "sdk_http_incomplete",
@@ -133,15 +210,20 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, SdkTranspor
     };
 
     let header_bytes = &buffer[..header_end];
-    let header_text = std::str::from_utf8(header_bytes).map_err(|error| {
-        SdkTransportError::new("sdk_http_headers_invalid", error.to_string())
-    })?;
+    let header_text = std::str::from_utf8(header_bytes)
+        .map_err(|error| SdkTransportError::new("sdk_http_headers_invalid", error.to_string()))?;
     let mut lines = header_text.split("\r\n");
     let request_line = lines.next().ok_or_else(|| {
-        SdkTransportError::new("sdk_http_request_line_missing", "HTTP request line is missing")
+        SdkTransportError::new(
+            "sdk_http_request_line_missing",
+            "HTTP request line is missing",
+        )
     })?;
     let mut request_parts = request_line.split_whitespace();
-    let method = request_parts.next().unwrap_or_default().to_ascii_uppercase();
+    let method = request_parts
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
     let raw_path = request_parts.next().unwrap_or_default();
     if method.is_empty() || raw_path.is_empty() {
         return Err(SdkTransportError::new(
@@ -154,9 +236,13 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, SdkTranspor
     let mut content_length = 0usize;
     let mut host = None;
     let mut duplicate_host = false;
+    let mut pairing_token = None;
+    let mut duplicate_pairing_token = false;
     let mut has_origin = false;
     for line in lines {
-        let Some((name, value)) = line.split_once(':') else { continue };
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
         if name.trim().eq_ignore_ascii_case("host") {
             if host.is_some() {
                 duplicate_host = true;
@@ -166,6 +252,13 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, SdkTranspor
         }
         if name.trim().eq_ignore_ascii_case("origin") {
             has_origin = true;
+        }
+        if name.trim().eq_ignore_ascii_case("x-mas-pairing-token") {
+            if pairing_token.is_some() {
+                duplicate_pairing_token = true;
+            } else {
+                pairing_token = Some(value.trim().to_owned());
+            }
         }
         if name.trim().eq_ignore_ascii_case("content-length") {
             content_length = value.trim().parse::<usize>().map_err(|error| {
@@ -184,7 +277,10 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, SdkTranspor
     while buffer.len().saturating_sub(body_start) < content_length {
         let remaining = content_length - buffer.len().saturating_sub(body_start);
         let mut chunk = vec![0_u8; remaining.min(16 * 1024)];
-        let read = stream.read(&mut chunk).await.map_err(SdkTransportError::read)?;
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .map_err(SdkTransportError::read)?;
         if read == 0 {
             return Err(SdkTransportError::new(
                 "sdk_http_body_incomplete",
@@ -198,12 +294,22 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, SdkTranspor
         method,
         path,
         body: buffer[body_start..body_start + content_length].to_vec(),
-        host_is_local: !duplicate_host && matches!(
-            host.as_deref(),
-            Some("127.0.0.1:8182" | "localhost:8182" | "10.0.2.2:8182")
-        ),
+        host: (!duplicate_host).then_some(host).flatten(),
+        pairing_token: (!duplicate_pairing_token)
+            .then_some(pairing_token)
+            .flatten(),
         has_origin,
     })
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.bytes()
+        .zip(right.bytes())
+        .fold(0_u8, |difference, (a, b)| difference | (a ^ b))
+        == 0
 }
 
 fn find_header_end(bytes: &[u8]) -> Option<usize> {
@@ -224,7 +330,10 @@ async fn write_response(
         .write_all(headers.as_bytes())
         .await
         .map_err(SdkTransportError::write)?;
-    stream.write_all(body).await.map_err(SdkTransportError::write)?;
+    stream
+        .write_all(body)
+        .await
+        .map_err(SdkTransportError::write)?;
     stream.shutdown().await.map_err(SdkTransportError::write)
 }
 
@@ -240,7 +349,10 @@ pub struct SdkTransportError {
 
 impl SdkTransportError {
     pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self { code: code.into(), message: message.into() }
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
     }
 
     fn bind(error: std::io::Error) -> Self {
@@ -257,6 +369,36 @@ impl SdkTransportError {
 
     fn write(error: std::io::Error) -> Self {
         Self::new("sdk_ingestion_write_failed", error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod paired_lan_tests {
+    use super::*;
+
+    #[test]
+    fn pairing_token_gates_lan_ingestion() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let server = Arc::new(SdkIngestionServer::paired_lan(Ipv4Addr::LOCALHOST, 0, Ipv4Addr::LOCALHOST, "secret".into()));
+            let mut events = server.subscribe();
+            let listener = server.bind().await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let task = tokio::spawn(server.run_bound(listener));
+            let body = br#"{"schemaVersion":1,"eventId":"one","occurredAt":"1","event":{"type":"context","payload":{"clientId":"client","context":{"attributes":{}}}}}"#;
+            async fn send(address: SocketAddr, token: &str, body: &[u8]) -> String {
+                let mut stream = TcpStream::connect(address).await.unwrap();
+                let request = format!("POST /v1/events HTTP/1.1\r\nHost: {address}\r\nX-MAS-Pairing-Token: {token}\r\nContent-Length: {}\r\n\r\n", body.len());
+                stream.write_all(request.as_bytes()).await.unwrap();
+                stream.write_all(body).await.unwrap();
+                let mut response = Vec::new();
+                stream.read_to_end(&mut response).await.unwrap();
+                String::from_utf8(response).unwrap()
+            }
+            assert!(send(address, "wrong", body).await.starts_with("HTTP/1.1 401"));
+            assert!(send(address, "secret", body).await.starts_with("HTTP/1.1 202"));
+            assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(2), events.recv()).await.unwrap().unwrap().event_id, "one");
+            task.abort();
+        });
     }
 }
 

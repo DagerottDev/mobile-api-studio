@@ -4,6 +4,16 @@ export type DevicePlatform = "ios" | "android";
 export type DoctorStatus = "pass" | "warning" | "fail";
 export type ImportMode = "merge" | "replace";
 
+export type CaptureTarget =
+  | { schemaVersion: number; type: "ios_simulator" | "android_emulator"; deviceId: string }
+  | { schemaVersion: number; type: "mac_all" }
+  | { schemaVersion: number; type: "mac_process"; pid: number; name: string }
+  | { schemaVersion: number; type: "physical_ios" | "physical_android"; address: string; interface: string };
+
+export type CaptureMode = { schemaVersion: number; type: "regular_proxy" | "local_all" | "local_process"; pid?: number };
+export interface MacProcess { pid: number; name: string }
+export interface LanInterface { name: string; address: string }
+
 export interface AppError {
   code: string;
   message: string;
@@ -46,11 +56,13 @@ export interface ConnectionSnapshot {
   strategy: string | null;
   proxyHost: string | null;
   proxyPort: number | null;
+  captureTarget?: CaptureTarget | null;
 }
 
 export interface ConnectDeviceResult {
   connection: ConnectionSnapshot;
   diagnostics: ConnectionDiagnostic[];
+  pairingToken?: string | null;
 }
 
 export interface RollbackJournal {
@@ -74,6 +86,8 @@ export interface CaptureSession {
   connectionStrategy: string | null;
   captureEngine: string | null;
   notes: string | null;
+  captureTarget?: CaptureTarget | null;
+  captureMode?: CaptureMode | null;
 }
 
 export interface HeaderValue {

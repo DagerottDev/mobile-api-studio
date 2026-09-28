@@ -12,7 +12,14 @@ import java.util.concurrent.Executors
 internal class MobileAPIStudioTransport(
     private val host: String,
     private val port: Int,
+    private val pairingToken: String?,
 ) {
+    init {
+        require(pairingToken == null || (pairingToken.length == 43 && pairingToken.all {
+            it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '-' || it == '_'
+        })) { "Invalid Mobile API Studio pairing token" }
+    }
+
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "MobileAPIStudio-SDK").apply { isDaemon = true }
     }
@@ -46,6 +53,7 @@ internal class MobileAPIStudioTransport(
                 append("POST /v1/events HTTP/1.1\r\n")
                 append("Host: $host:$port\r\n")
                 append("Content-Type: application/json\r\n")
+                pairingToken?.let { append("X-MAS-Pairing-Token: $it\r\n") }
                 append("Content-Length: ${body.size}\r\n")
                 append("Connection: close\r\n")
                 append("\r\n")

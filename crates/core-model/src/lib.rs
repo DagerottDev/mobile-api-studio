@@ -31,6 +31,45 @@ pub enum DevicePlatform {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct CaptureTarget {
+    pub schema_version: u16,
+    #[serde(flatten)]
+    pub kind: CaptureTargetKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum CaptureTargetKind {
+    IosSimulator { device_id: String },
+    AndroidEmulator { device_id: String },
+    MacAll,
+    MacProcess { pid: u32, name: String },
+    PhysicalIos { address: String, interface: String },
+    PhysicalAndroid { address: String, interface: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureMode {
+    pub schema_version: u16,
+    #[serde(flatten)]
+    pub kind: CaptureModeKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CaptureModeKind {
+    RegularProxy,
+    LocalAll,
+    LocalProcess { pid: u32 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceCapabilities {
     pub can_install_ca: bool,
     pub can_auto_route_proxy: bool,
@@ -63,6 +102,10 @@ pub struct CaptureSession {
     pub connection_strategy: Option<String>,
     pub capture_engine: Option<String>,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub capture_target: Option<CaptureTarget>,
+    #[serde(default)]
+    pub capture_mode: Option<CaptureMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
