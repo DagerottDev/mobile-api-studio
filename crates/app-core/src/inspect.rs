@@ -1,8 +1,8 @@
 use super::{replay_commands::redact_detail_for_ui, AppState};
 use crate::State;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use capture_core::{CaptureEvent, CapturedBody, CapturedFlow};
-use core_model::{AppError, BodyRef, FlowDetail, RequestDetail, ResponseDetail};
+use capture_core::{CaptureEvent, CapturedBody, CapturedFlow, CapturedWebSocketMessage};
+use core_model::{AppError, BodyRef, FlowDetail, RequestDetail, ResponseDetail, WebSocketMessage};
 use sdk_protocol::SDK_CORRELATION_HEADER;
 use serde::Serialize;
 use storage::{BodyStore, Database};
@@ -29,21 +29,22 @@ pub fn get_flow_detail(
 pub fn read_body(sha256: String, state: State<'_, AppState>) -> Result<BodyPayload, AppError> {
     let bytes = state
         .body_store
-        .read(&sha256)
+        .read_bounded(&sha256, 2 * 1024 * 1024)
         .map_err(|error| AppError::storage(error.to_string()))?;
 
-    match String::from_utf8(bytes.clone()) {
-        Ok(text) => Ok(BodyPayload {
-            sha256,
-            text: Some(text),
-            base64: None,
-        }),
-        Err(_) => Ok(BodyPayload {
-            sha256,
-            text: None,
-            base64: Some(BASE64.encode(bytes)),
-        }),
-    }
+    Ok(BodyPayload {
+        sha256,
+        text: std::str::from_utf8(&bytes).ok().map(str::to_owned),
+        base64: Some(BASE64.encode(bytes)),
+    })
+}
+
+pub fn list_websocket_messages(
+    flow_id: Option<String>, session_id: Option<String>, text: Option<String>,
+    limit: Option<usize>, offset: Option<usize>, state: State<'_, AppState>,
+) -> Result<Vec<WebSocketMessage>, AppError> {
+    state.database.list_websocket_messages(flow_id.as_deref(), session_id.as_deref(), text.as_deref(), limit.unwrap_or(200), offset.unwrap_or(0))
+        .map_err(|error| AppError::storage(error.to_string()))
 }
 
 pub fn export_curl(flow_id: String, state: State<'_, AppState>) -> Result<String, AppError> {
@@ -105,7 +106,7 @@ pub fn export_curl(flow_id: String, state: State<'_, AppState>) -> Result<String
     Ok(parts.join(" "))
 }
 
-pub(super) fn ingest_capture_event(
+pub fn ingest_capture_event(
     database: &Database,
     body_store: &BodyStore,
     event: CaptureEvent,
@@ -114,6 +115,10 @@ pub(super) fn ingest_capture_event(
         CaptureEvent::FlowDetailCompleted(flow) => {
             persist_captured_flow(database, body_store, flow)
         }
+        CaptureEvent::WebSocketMessage(message) => persist_websocket_message(database, body_store, message),
+        CaptureEvent::WebSocketClosed { flow_id, close_code, close_reason, closed_by_client } => database
+            .update_websocket_close(&flow_id, close_code, close_reason, closed_by_client)
+            .map(|_| ()).map_err(|error| AppError::storage(error.to_string())),
         CaptureEvent::FlowStarted(flow)
         | CaptureEvent::FlowUpdated(flow)
         | CaptureEvent::FlowCompleted(flow) => database
@@ -162,11 +167,26 @@ fn persist_captured_flow(
         error_message: flow.error_message,
         proxy_rule_ids: flow.proxy_rule_ids,
         proxy_rule_changes: flow.proxy_rule_changes,
+        protocol: flow.protocol,
     };
 
     database
         .upsert_flow_detail(&detail)
-        .map_err(|error| AppError::storage(error.to_string()))
+        .map_err(|error| AppError::storage(error.to_string()))?;
+    crate::search_index::index_flow(database, body_store, &detail)
+}
+
+fn persist_websocket_message(database: &Database, body_store: &BodyStore, message: CapturedWebSocketMessage) -> Result<(), AppError> {
+    let search_text = message.body.as_ref().filter(|body| !body.is_binary)
+        .map(|body| crate::search_index::redacted_body_text(&body.bytes, body.content_type.as_deref()))
+        .transpose()?.unwrap_or_default();
+    let record = WebSocketMessage {
+        id: message.id, flow_id: message.flow_id, session_id: message.session_id,
+        sequence: message.sequence, from_client: message.from_client, opcode: message.opcode,
+        timestamp: message.timestamp, dropped: message.dropped, injected: message.injected,
+        body: store_body(body_store, message.body)?,
+    };
+    database.upsert_websocket_message(&record, &search_text).map_err(|error| AppError::storage(error.to_string()))
 }
 
 fn store_body(
@@ -176,6 +196,9 @@ fn store_body(
     let Some(body) = body else {
         return Ok(None);
     };
+    if body.bytes.len() > 2 * 1024 * 1024 {
+        return Err(AppError::new("capture_body_too_large", "Captured payload exceeds 2 MiB.", true));
+    }
     let stored = body_store
         .put(&body.bytes)
         .map_err(|error| AppError::storage(error.to_string()))?;

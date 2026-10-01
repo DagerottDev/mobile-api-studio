@@ -8,3 +8,4 @@ license.workspace = true
 [dependencies]
 regex = "1"
 serde.workspace = true
+serde_json.workspace = true

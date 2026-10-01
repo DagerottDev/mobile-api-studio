@@ -607,6 +607,8 @@ pub fn run() {
             recover_pending_rollback,
             inspect::get_flow_detail,
             inspect::read_body,
+            inspect::list_websocket_messages,
+            inspect::decode_protocol_body,
             inspect::export_curl,
             replay_commands::create_replay_draft,
             replay_commands::send_replay,

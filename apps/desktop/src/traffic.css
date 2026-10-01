@@ -98,6 +98,10 @@
   overflow-wrap: anywhere;
 }
 
+.ws-message-list { display: grid; gap: 6px; max-height: 260px; overflow: auto; margin: 10px 0; }
+.ws-message-row { display: flex; justify-content: space-between; gap: 10px; width: 100%; text-align: left; }
+.ws-message-row span { color: var(--muted); overflow-wrap: anywhere; }
+
 .compact-detail-grid {
   padding: 0;
   grid-template-columns: 72px minmax(0, 1fr);

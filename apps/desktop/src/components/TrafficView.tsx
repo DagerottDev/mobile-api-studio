@@ -1,4 +1,5 @@
 import { invoke } from "../api/invoke";
+import { BodyViewer } from "./BodyViewer";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { MockFixture, MockRule } from "../mockTypes";
 import type { FlowSdkEnrichment, SdkContextSnapshot, SdkEnvelope } from "../sdkTypes";
@@ -12,6 +13,7 @@ import type {
   SavedCollection,
   SavedRequest,
   TrafficSearchResult,
+  WebSocketMessage,
 } from "../types";
 
 type StatusFilter = "all" | "2xx" | "3xx" | "4xx" | "5xx";
@@ -45,6 +47,14 @@ export function TrafficView({ onOpenConnect }: { onOpenConnect: () => void }) {
   const [saveState, setSaveState] = useState("Save to collection");
   const [mockState, setMockState] = useState("Create mock");
   const [fixtureState, setFixtureState] = useState("Save fixture");
+  const [wsQuery, setWsQuery] = useState("");
+  const [wsPage, setWsPage] = useState(0);
+  const [wsMessages, setWsMessages] = useState<WebSocketMessage[]>([]);
+  const [wsSelectedId, setWsSelectedId] = useState<string | null>(null);
+  const [wsBody, setWsBody] = useState<BodyPayload | null>(null);
+  const [wsBodyError, setWsBodyError] = useState<string | null>(null);
+  const [wsLoading, setWsLoading] = useState(false);
+  const [wsError, setWsError] = useState<string | null>(null);
 
   const refreshMetadata = useCallback(async () => {
     try {
@@ -122,6 +132,8 @@ export function TrafficView({ onOpenConnect }: { onOpenConnect: () => void }) {
     let cancelled = false;
     async function loadDetail() {
       setDetail(null);
+      setRequestBody(null);
+      setResponseBody(null);
       setDetailLoading(true);
       setDetailError(null);
       setSdkError(null);
@@ -166,6 +178,46 @@ export function TrafficView({ onOpenConnect }: { onOpenConnect: () => void }) {
     void loadDetail();
     return () => { cancelled = true; };
   }, [selectedFlowId, detailRetry]);
+
+  useEffect(() => { setWsQuery(""); setWsPage(0); setWsSelectedId(null); }, [selectedFlowId]);
+
+  const isWebSocket = Boolean(selectedFlowId && detail?.summary.id === selectedFlowId && detail.protocol?.websocket);
+  useEffect(() => {
+    if (!selectedFlowId || !isWebSocket) { setWsMessages([]); setWsSelectedId(null); setWsError(null); setWsLoading(false); return; }
+    const flowId = selectedFlowId;
+    let cancelled = false;
+    let timer: number;
+    let first = true;
+    const loadMessages = async () => {
+      if (first) setWsLoading(true);
+      try {
+        const [messages, currentDetail] = await Promise.all([
+          invoke<WebSocketMessage[]>("list_websocket_messages", { flowId, sessionId: null, text: wsQuery.trim() || null, limit: 200, offset: wsPage * 200 }),
+          invoke<FlowDetail | null>("get_flow_detail", { flowId }),
+        ]);
+        if (cancelled) return;
+        setWsMessages(messages);
+        setWsSelectedId((current) => current && messages.some((message) => message.id === current) ? current : messages[0]?.id ?? null);
+        if (currentDetail) setDetail((current) => current?.summary.id === flowId ? currentDetail : current);
+        setWsError(null);
+      } catch (value) { if (!cancelled) setWsError(formatInvokeError(value)); }
+      finally {
+        if (!cancelled) { setWsLoading(false); first = false; timer = window.setTimeout(() => void loadMessages(), 1200); }
+      }
+    };
+    timer = window.setTimeout(() => void loadMessages(), 200);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [selectedFlowId, isWebSocket, wsQuery, wsPage]);
+
+  const selectedWsMessage = wsMessages.find((message) => message.id === wsSelectedId) ?? null;
+  useEffect(() => {
+    let cancelled = false;
+    setWsBody(null);
+    setWsBodyError(null);
+    const expectedSha = selectedWsMessage?.body?.sha256;
+    if (selectedWsMessage?.body) void loadBody(selectedWsMessage.body).then((body) => { if (!cancelled && body?.sha256 === expectedSha) setWsBody(body); }).catch((value) => { if (!cancelled) setWsBodyError(formatInvokeError(value)); });
+    return () => { cancelled = true; };
+  }, [selectedWsMessage?.id, selectedWsMessage?.body?.sha256]);
 
   const hasActiveFilters = Boolean(textFilter.trim() || sdkMetadataFilter.trim())
     || methodFilter !== "all" || statusFilter !== "all"
@@ -299,14 +351,29 @@ export function TrafficView({ onOpenConnect }: { onOpenConnect: () => void }) {
         {detail ? (
           <div className="inspector-scroll">
             <InspectorSummary detail={detail} sessionName={selectedSearchResult?.sessionName ?? null} endpointKey={selectedSearchResult?.endpoint.key ?? null} />
+            <InspectorProtocol detail={detail} />
             <InspectorProxyRules detail={detail} />
             {sdkError ? <section className="inspector-section" role="alert"><h3>App context</h3><p className="muted-copy">App context could not load: {sdkError}</p></section>
               : <SdkEnrichmentSection enrichment={sdkEnrichment} />}
             {collections.length > 0 ? <section className="inspector-section collection-save-panel"><h3>Save request</h3><div className="collection-save-row"><select value={collectionId} onChange={(event) => setCollectionId(event.target.value)}>{collections.map((collection) => <option key={collection.id} value={collection.id}>{collection.name}</option>)}</select><button className="primary compact" onClick={() => void saveToCollection()}>{saveState}</button></div></section> : <section className="inspector-section"><h3>Save request</h3><p className="muted-copy">Create a collection in Workspace to save this request.</p></section>}
             <InspectorHeaders title="Request headers" headers={detail.request?.headers ?? []} />
-            <InspectorBody title="Request body" bodyRef={detail.request?.body ?? null} payload={requestBody} />
+            {detail.protocol?.requestTrailers.length ? <InspectorHeaders title="Request trailers" headers={detail.protocol.requestTrailers} /> : null}
+            <BodyViewer key={`request-${detail.request?.body?.sha256 ?? "none"}`} title="Request body" bodyRef={detail.request?.body ?? null} payload={requestBody} />
             <InspectorHeaders title="Response headers" headers={detail.response?.headers ?? []} />
-            <InspectorBody title="Response body" bodyRef={detail.response?.body ?? null} payload={responseBody} />
+            {detail.protocol?.responseTrailers.length ? <InspectorHeaders title="Response trailers" headers={detail.protocol.responseTrailers} /> : null}
+            <BodyViewer key={`response-${detail.response?.body?.sha256 ?? "none"}`} title="Response body" bodyRef={detail.response?.body ?? null} payload={responseBody} />
+            {isWebSocket ? <section className="inspector-section"><h3>WebSocket messages</h3>
+              <label className="field-label">Search indexed JSON/form text<input className="text-input" value={wsQuery} maxLength={256} onChange={(event) => { setWsQuery(event.target.value); setWsPage(0); setWsMessages([]); setWsSelectedId(null); }} placeholder="Search indexed JSON/form fields" /></label>
+              {wsError ? <p role="alert">{wsError}</p> : null}
+              <div className="ws-message-list">{wsMessages.map((message) => <button key={message.id} className="secondary compact ws-message-row" aria-pressed={wsSelectedId === message.id} onClick={() => setWsSelectedId(message.id)}>
+                <strong>#{message.sequence} {message.fromClient ? "Client → server" : "Server → client"}</strong>
+                <span>{message.opcode === 1 ? "Text" : message.opcode === 2 ? "Binary" : `Opcode ${message.opcode}`} · {formatClock(message.timestamp)}{message.dropped ? " · dropped" : ""}{message.injected ? " · injected" : ""}</span>
+              </button>)}</div>
+              {!wsLoading && wsMessages.length === 0 && !wsError ? <p className="muted-copy">No messages match this flow and search.</p> : null}
+              {wsLoading ? <p className="muted-copy" role="status">Loading messages…</p> : null}
+              <div className="inspector-actions"><button className="secondary compact" onClick={() => { setWsMessages([]); setWsPage((page) => Math.max(0, page - 1)); }} disabled={wsLoading || wsPage === 0}>Previous</button><span>Page {wsPage + 1}</span><button className="secondary compact" onClick={() => { setWsMessages([]); setWsPage((page) => page + 1); }} disabled={wsLoading || wsMessages.length < 200}>Next</button></div>
+            </section> : null}
+            {isWebSocket && selectedWsMessage ? <>{wsBodyError ? <p role="alert">Message body could not load: {wsBodyError}</p> : null}<BodyViewer key={`ws-${selectedWsMessage.id}-${selectedWsMessage.body?.sha256 ?? "none"}`} title={`WebSocket message #${selectedWsMessage.sequence}`} bodyRef={selectedWsMessage.body} payload={wsBody} /></> : null}
             <InspectorTiming detail={detail} />
             {curlPreview ? <section className="inspector-section"><h3>Safe cURL</h3><pre>{curlPreview}</pre></section> : null}
           </div>
@@ -361,6 +428,47 @@ function InspectorSummary({ detail, sessionName, endpointKey }: { detail: FlowDe
   return <section className="inspector-section"><h3>Overview</h3><dl className="detail-grid compact-detail-grid"><dt>Method</dt><dd>{detail.request?.method ?? detail.summary.method}</dd><dt>Status</dt><dd>{detail.response?.statusCode ?? detail.summary.statusCode ?? "pending"}</dd><dt>URL</dt><dd>{detail.request?.url ?? `${detail.summary.host}${detail.summary.path}`}</dd><dt>Session</dt><dd>{sessionName ?? detail.summary.sessionId ?? "unassigned"}</dd><dt>Source</dt><dd>{detail.summary.source}</dd><dt>Endpoint</dt><dd>{endpointKey ?? "—"}</dd><dt>Total</dt><dd>{formatMs(detail.timing.totalMs)}</dd></dl></section>;
 }
 
+function InspectorProtocol({ detail }: { detail: FlowDetail }) {
+  const protocol = detail.protocol;
+  if (!protocol) return null;
+  const grpcHeader = (name: string) => {
+    const header = protocol.responseTrailers.find((item) => item.name.toLowerCase() === name)
+      ?? detail.response?.headers.find((item) => item.name.toLowerCase() === name);
+    return header ? header.sensitive ? "<redacted>" : header.value : null;
+  };
+  const grpcStatus = grpcHeader("grpc-status");
+  const grpcMessage = grpcHeader("grpc-message");
+  return <section className="inspector-section"><h3>Protocol and connections</h3>
+    <dl className="detail-grid compact-detail-grid">
+      <dt>Request</dt><dd>{protocol.requestHttpVersion ?? "unknown HTTP version"}</dd>
+      <dt>Response</dt><dd>{protocol.responseHttpVersion ?? "unknown HTTP version"}</dd>
+      {grpcStatus !== null ? <><dt>gRPC status</dt><dd>{grpcStatus}</dd></> : null}
+      {grpcMessage !== null ? <><dt>gRPC message</dt><dd>{grpcMessage}</dd></> : null}
+      {protocol.websocket ? <><dt>WebSocket</dt><dd>{protocol.websocketCloseCode != null ? `Closed with code ${protocol.websocketCloseCode}${protocol.websocketCloseReason ? ` · ${protocol.websocketCloseReason}` : ""}${protocol.websocketClosedByClient == null ? "" : protocol.websocketClosedByClient ? " · client closed" : " · server closed"}` : "Upgraded"}</dd></> : null}
+    </dl>
+    {(["clientConnection", "serverConnection"] as const).map((side) => {
+      const connection = protocol[side];
+      if (!connection) return null;
+      return <details key={side}><summary>{side === "clientConnection" ? "Client connection" : "Server connection"} · {connection.transport}{connection.alpn ? ` · ALPN ${connection.alpn}` : ""}</summary>
+        <dl className="detail-grid compact-detail-grid">
+          <dt>ID</dt><dd>{connection.id}</dd>
+          <dt>Peer</dt><dd>{connection.peerAddress ?? "—"}</dd>
+          <dt>Local</dt><dd>{connection.localAddress ?? "—"}</dd>
+          {connection.serverAddress ? <><dt>Server</dt><dd>{connection.serverAddress}</dd></> : null}
+          <dt>TLS</dt><dd>{connection.tlsEstablished ? `${connection.tlsVersion ?? "established"}${connection.cipher ? ` · ${connection.cipher}` : ""}` : "Not established"}</dd>
+          {connection.sni ? <><dt>SNI</dt><dd>{connection.sni}</dd></> : null}
+          {connection.alpn ? <><dt>ALPN</dt><dd>{connection.alpn}</dd></> : null}
+          {connection.peerCertificates[0] ? <><dt>Certificate</dt><dd>{connection.peerCertificates[0].subject}</dd></> : null}
+          {connection.peerCertificates[0] ? <><dt>Issuer</dt><dd>{connection.peerCertificates[0].issuer}</dd><dt>SHA-256</dt><dd>{connection.peerCertificates[0].sha256}</dd></> : null}
+          {connection.startedAt ? <><dt>Started</dt><dd>{formatClock(connection.startedAt)}</dd></> : null}
+          {connection.tlsEstablishedAt ? <><dt>TLS at</dt><dd>{formatClock(connection.tlsEstablishedAt)}</dd></> : null}
+          {connection.endedAt ? <><dt>Ended</dt><dd>{formatClock(connection.endedAt)}</dd></> : null}
+        </dl>
+      </details>;
+    })}
+  </section>;
+}
+
 function InspectorProxyRules({ detail }: { detail: FlowDetail }) {
   const ids = detail.proxyRuleIds ?? [];
   const changes = detail.proxyRuleChanges ?? [];
@@ -373,14 +481,6 @@ function InspectorProxyRules({ detail }: { detail: FlowDetail }) {
 
 function InspectorHeaders({ title, headers }: { title: string; headers: HeaderValue[] }) {
   return <section className="inspector-section"><h3>{title}</h3>{headers.length === 0 ? <p className="muted-copy">No headers captured.</p> : <div className="header-table">{headers.map((header, index) => <div className="header-row" key={`${header.name}-${index}`}><strong>{header.name}</strong><span className={header.sensitive ? "redacted-value" : ""}>{header.sensitive ? "<redacted>" : header.value}</span></div>)}</div>}</section>;
-}
-
-function InspectorBody({ title, bodyRef, payload }: { title: string; bodyRef: BodyRef | null; payload: BodyPayload | null }) {
-  if (!bodyRef) return <section className="inspector-section"><h3>{title}</h3><p className="muted-copy">No body captured.</p></section>;
-  const raw = payload?.text ?? payload?.base64 ?? "Loading body…";
-  const maxDisplay = 100_000;
-  const rendered = raw.length > maxDisplay ? `${raw.slice(0, maxDisplay)}\n… UI preview truncated …` : raw;
-  return <section className="inspector-section"><div className="section-title-row"><h3>{title}</h3><span>{bodyRef.contentType ?? "unknown"} · {bodyRef.byteSize} bytes{bodyRef.isTruncated ? " · capture truncated" : ""}</span></div><pre>{bodyRef.isBinary && payload?.base64 ? `Base64\n${rendered}` : rendered}</pre></section>;
 }
 
 function InspectorTiming({ detail }: { detail: FlowDetail }) {

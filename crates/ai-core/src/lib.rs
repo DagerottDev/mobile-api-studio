@@ -301,7 +301,7 @@ fn redact_header_object(
     let sensitive_name = is_sensitive_header(name) || secret_keys.contains(&normalize_secret_key(name));
     let mut next = Map::new();
     for (key, child) in object {
-        if key.eq_ignore_ascii_case("value") && (sensitive_flag || sensitive_name) {
+        if secret_keys.contains(&normalize_secret_key(key)) || (key.eq_ignore_ascii_case("value") && (sensitive_flag || sensitive_name)) {
             *redactions += 1;
             next.insert(key.clone(), Value::String("<redacted>".into()));
         } else {
@@ -323,7 +323,10 @@ fn redact_named_difference(
         || secret_keys.contains(&normalize_secret_key(name));
     let mut next = Map::new();
     for (key, child) in object {
-        if secret_name && (key.eq_ignore_ascii_case("baseline") || key.eq_ignore_ascii_case("candidate")) {
+        if secret_keys.contains(&normalize_secret_key(key)) {
+            *redactions += 1;
+            next.insert(key.clone(), Value::String("<redacted>".into()));
+        } else if secret_name && (key.eq_ignore_ascii_case("baseline") || key.eq_ignore_ascii_case("candidate")) {
             *redactions += 1;
             next.insert(key.clone(), json!(["<redacted>"]));
         } else {

@@ -226,6 +226,154 @@ pub struct FlowDetail {
     pub proxy_rule_ids: Vec<String>,
     #[serde(default)]
     pub proxy_rule_changes: Vec<ProxyRuleChange>,
+    #[serde(default)]
+    pub protocol: Option<ProtocolDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CertificateDetails {
+    pub subject: String,
+    pub issuer: String,
+    pub not_before: String,
+    pub not_after: String,
+    pub sha256: String,
+    pub subject_alternative_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionDetails {
+    pub id: String,
+    pub transport: String,
+    pub peer_address: Option<String>,
+    pub local_address: Option<String>,
+    pub server_address: Option<String>,
+    pub tls_version: Option<String>,
+    pub cipher: Option<String>,
+    pub alpn: Option<String>,
+    pub sni: Option<String>,
+    pub tls_established: bool,
+    pub started_at: Option<String>,
+    pub tls_established_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub peer_certificates: Vec<CertificateDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolDetails {
+    pub request_http_version: Option<String>,
+    pub response_http_version: Option<String>,
+    pub request_trailers: Vec<HeaderValue>,
+    pub response_trailers: Vec<HeaderValue>,
+    pub client_connection: Option<ConnectionDetails>,
+    pub server_connection: Option<ConnectionDetails>,
+    pub websocket: bool,
+    #[serde(default)]
+    pub websocket_close_code: Option<u16>,
+    #[serde(default)]
+    pub websocket_close_reason: Option<String>,
+    #[serde(default)]
+    pub websocket_closed_by_client: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSocketMessage {
+    pub id: String,
+    pub flow_id: String,
+    pub session_id: Option<String>,
+    pub sequence: u64,
+    pub from_client: bool,
+    pub opcode: u8,
+    pub timestamp: String,
+    pub dropped: bool,
+    pub injected: bool,
+    pub body: Option<BodyRef>,
+}
+
+pub fn validate_protocol_details(protocol: &ProtocolDetails) -> Result<(), String> {
+    let text_ok = |value: &str| value.len() <= 1_024;
+    if protocol.request_trailers.len() > 64 || protocol.response_trailers.len() > 64
+        || protocol.request_http_version.as_deref().is_some_and(|value| !text_ok(value))
+        || protocol.response_http_version.as_deref().is_some_and(|value| !text_ok(value))
+        || protocol.websocket_close_reason.as_deref().is_some_and(|value| !text_ok(value))
+        || protocol.request_trailers.iter().chain(&protocol.response_trailers).any(|header| !text_ok(&header.name) || !text_ok(&header.value)) {
+        return Err("Protocol metadata exceeds trailer or text limits.".into());
+    }
+    for connection in [protocol.client_connection.as_ref(), protocol.server_connection.as_ref()].into_iter().flatten() {
+        if connection.id.is_empty() || connection.id.len() > 512 || connection.peer_certificates.len() > 16
+            || !text_ok(&connection.transport)
+            || [connection.peer_address.as_deref(), connection.local_address.as_deref(), connection.server_address.as_deref(),
+                connection.tls_version.as_deref(), connection.cipher.as_deref(), connection.alpn.as_deref(), connection.sni.as_deref(),
+                connection.started_at.as_deref(), connection.tls_established_at.as_deref(), connection.ended_at.as_deref()]
+                .into_iter().flatten().any(|value| !text_ok(value)) {
+            return Err("Connection metadata exceeds supported limits.".into());
+        }
+        for cert in &connection.peer_certificates {
+            if cert.subject_alternative_names.len() > 64
+                || [&cert.subject, &cert.issuer, &cert.not_before, &cert.not_after, &cert.sha256]
+                    .into_iter().any(|value| !text_ok(value))
+                || cert.sha256.len() != 64 || !cert.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || cert.subject_alternative_names.iter().any(|value| !text_ok(value)) {
+                return Err("Certificate metadata exceeds supported limits.".into());
+            }
+        }
+    }
+    if serde_json::to_vec(protocol).map_err(|error| error.to_string())?.len() > 64 * 1024 {
+        return Err("Protocol metadata exceeds 64 KiB.".into());
+    }
+    Ok(())
+}
+
+pub fn validate_websocket_message(message: &WebSocketMessage) -> Result<(), String> {
+    if message.id.is_empty() || message.id.len() > 512 || message.flow_id.is_empty() || message.flow_id.len() > 512
+        || message.session_id.as_deref().is_some_and(|value| value.len() > 512)
+        || message.sequence == 0 || message.opcode > 15
+        || message.timestamp.is_empty() || message.timestamp.len() > 32 || !message.timestamp.bytes().all(|byte| byte.is_ascii_digit())
+        || message.body.as_ref().is_some_and(|body| {
+            body.sha256.len() != 64 || !body.sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || body.byte_size > 2 * 1024 * 1024
+                || body.content_type.as_deref().is_some_and(|value| value.len() > 1_024)
+                || body.encoding.as_deref().is_some_and(|value| value.len() > 1_024)
+        }) {
+        return Err("WebSocket message metadata exceeds supported limits.".into());
+    }
+    if serde_json::to_vec(message).map_err(|error| error.to_string())?.len() > 64 * 1024 {
+        return Err("WebSocket message metadata exceeds 64 KiB.".into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod protocol_model_tests {
+    use super::*;
+
+    #[test]
+    fn old_flow_details_default_protocol_and_new_fields_use_camel_case() {
+        let detail = FlowDetail {
+            summary: FlowSummary::fixture("flow", "GET", "example.test", "/", 200, 1, 0, "1"),
+            request: None, response: None, timing: Timing::default(), error_code: None,
+            error_message: None, proxy_rule_ids: vec![], proxy_rule_changes: vec![], protocol: None,
+        };
+        let mut json = serde_json::to_value(detail).unwrap();
+        json.as_object_mut().unwrap().remove("protocol");
+        let restored: FlowDetail = serde_json::from_value(json).unwrap();
+        assert!(restored.protocol.is_none());
+        let protocol = ProtocolDetails { request_http_version: Some("HTTP/2".into()), websocket: true,
+            websocket_close_code: Some(1000), ..Default::default() };
+        let value = serde_json::to_value(protocol).unwrap();
+        assert_eq!(value["requestHttpVersion"], "HTTP/2");
+        assert_eq!(value["websocketCloseCode"], 1000);
+        assert!(validate_protocol_details(&ProtocolDetails::default()).is_ok());
+        let oversized = ProtocolDetails { request_http_version: Some("x".repeat(1_025)), ..Default::default() };
+        assert!(validate_protocol_details(&oversized).is_err());
+        let message = WebSocketMessage { id: "m".into(), flow_id: "f".into(), session_id: None, sequence: 1,
+            from_client: true, opcode: 1, timestamp: "1".into(), dropped: false, injected: false, body: None };
+        assert!(validate_websocket_message(&message).is_ok());
+        assert!(validate_websocket_message(&WebSocketMessage { opcode: 255, ..message }).is_err());
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

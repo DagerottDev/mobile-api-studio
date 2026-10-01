@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use core_model::{CaptureMode, FlowSummary, HeaderValue, Timing};
+use core_model::{CaptureMode, FlowSummary, HeaderValue, ProtocolDetails, Timing};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -88,6 +88,23 @@ pub struct CapturedFlow {
     pub proxy_rule_ids: Vec<String>,
     #[serde(default)]
     pub proxy_rule_changes: Vec<core_model::ProxyRuleChange>,
+    #[serde(default)]
+    pub protocol: Option<ProtocolDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturedWebSocketMessage {
+    pub id: String,
+    pub flow_id: String,
+    pub session_id: Option<String>,
+    pub sequence: u64,
+    pub from_client: bool,
+    pub opcode: u8,
+    pub timestamp: String,
+    pub dropped: bool,
+    pub injected: bool,
+    pub body: Option<CapturedBody>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -99,6 +116,13 @@ pub enum CaptureEvent {
     FlowUpdated(FlowSummary),
     FlowCompleted(FlowSummary),
     FlowDetailCompleted(CapturedFlow),
+    WebSocketMessage(CapturedWebSocketMessage),
+    WebSocketClosed {
+        flow_id: String,
+        close_code: Option<u16>,
+        close_reason: Option<String>,
+        closed_by_client: Option<bool>,
+    },
     FlowFailed {
         flow_id: String,
         code: String,

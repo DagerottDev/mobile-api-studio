@@ -162,6 +162,50 @@ export interface FlowDetail {
   errorMessage: string | null;
   proxyRuleIds: string[];
   proxyRuleChanges: { ruleId: string; field: string; before: string; after: string }[];
+  protocol?: ProtocolDetails | null;
+}
+
+export interface ConnectionDetails {
+  id: string;
+  transport: string;
+  peerAddress: string | null;
+  localAddress: string | null;
+  serverAddress: string | null;
+  tlsVersion: string | null;
+  cipher: string | null;
+  alpn: string | null;
+  sni: string | null;
+  tlsEstablished: boolean;
+  startedAt: string | null;
+  tlsEstablishedAt: string | null;
+  endedAt: string | null;
+  peerCertificates: { subject: string; issuer: string; notBefore: string; notAfter: string; sha256: string; subjectAlternativeNames: string[] }[];
+}
+
+export interface ProtocolDetails {
+  requestHttpVersion: string | null;
+  responseHttpVersion: string | null;
+  requestTrailers: HeaderValue[];
+  responseTrailers: HeaderValue[];
+  clientConnection: ConnectionDetails | null;
+  serverConnection: ConnectionDetails | null;
+  websocket: boolean;
+  websocketCloseCode?: number | null;
+  websocketCloseReason?: string | null;
+  websocketClosedByClient?: boolean | null;
+}
+
+export interface WebSocketMessage {
+  id: string;
+  flowId: string;
+  sessionId: string | null;
+  sequence: number;
+  fromClient: boolean;
+  opcode: number;
+  timestamp: string;
+  dropped: boolean;
+  injected: boolean;
+  body: BodyRef | null;
 }
 
 export interface BodyPayload {
@@ -326,6 +370,7 @@ export interface PortableWorkspaceBundle {
   environments: Environment[];
   environmentVariables: EnvironmentVariable[];
   proxyRules: { rule: ProxyRule; mapLocalFileOmitted: boolean; actionOmitted: boolean }[];
+  websocketMessages?: { message: WebSocketMessage; bodyBase64: string | null }[];
 }
 
 export interface ImportSummary {
@@ -340,4 +385,6 @@ export interface ImportSummary {
   proxyRulesDisabled: number;
   mapLocalFilesOmitted: number;
   ruleActionsOmitted: number;
+  websocketMessages?: number;
+  searchIndexWarning?: string | null;
 }

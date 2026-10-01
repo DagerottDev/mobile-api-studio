@@ -5,17 +5,18 @@ use capture_core::CaptureEngine;
 use core_model::{
     proxy_rules::{ProxyRule, ProxyRuleAction, RulePattern, RulePatternKind},
     AppError, BodyRef, CaptureSession, Environment, EnvironmentVariable, FlowDetail, FlowSummary,
-    OnboardingStep, SavedCollection, SavedRequest, SessionStatus,
+    OnboardingStep, SavedCollection, SavedRequest, SessionStatus, WebSocketMessage,
 };
 use device_android::AndroidDeviceProvider;
 use device_ios::IosDeviceProvider;
 use secret_store::SecretStore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{collections::HashSet, fs};
 use storage::{ImportedFlow, ImportedSession, WorkspaceReplacement};
 use workspace_core::{ConnectionDoctorReport, DoctorCheck, DoctorStatus};
 
-const PORTABLE_BUNDLE_VERSION: u16 = 4;
+const PORTABLE_BUNDLE_VERSION: u16 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +30,15 @@ pub struct PortableWorkspaceBundle {
     pub environment_variables: Vec<EnvironmentVariable>,
     #[serde(default)]
     pub proxy_rules: Vec<PortableProxyRule>,
+    #[serde(default)]
+    pub websocket_messages: Vec<PortableWebSocketMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableWebSocketMessage {
+    pub message: WebSocketMessage,
+    pub body_base64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +88,8 @@ pub struct ImportSummary {
     pub map_local_files_omitted: usize,
     pub rule_actions_omitted: usize,
     pub proxy_rules_disabled: usize,
+    pub websocket_messages: usize,
+    pub search_index_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -383,6 +395,19 @@ pub fn export_workspace(state: State<'_, AppState>) -> Result<PortableWorkspaceB
         PortableProxyRule { rule, map_local_file_omitted, action_omitted }
     }).collect();
 
+    let included_flows: HashSet<&str> = portable_sessions.iter().flat_map(|session| session.flows.iter().map(|flow| flow.summary.id.as_str())).collect();
+    let mut websocket_messages = Vec::new();
+    let mut offset = 0;
+    loop {
+        let messages = state.database.list_websocket_messages(None, None, None, 1_000, offset).map_err(storage_error)?;
+        for message in &messages {
+            if included_flows.contains(message.flow_id.as_str()) {
+                websocket_messages.push(PortableWebSocketMessage { message: message.clone(), body_base64: read_body_for_export(&state, message.body.as_ref())? });
+            }
+        }
+        offset += messages.len();
+        if messages.len() < 1_000 { break; }
+    }
     Ok(PortableWorkspaceBundle {
         bundle_version: PORTABLE_BUNDLE_VERSION,
         exported_at: now_epoch_millis()?,
@@ -392,6 +417,7 @@ pub fn export_workspace(state: State<'_, AppState>) -> Result<PortableWorkspaceB
         environments,
         environment_variables,
         proxy_rules,
+        websocket_messages,
     })
 }
 
@@ -438,11 +464,11 @@ pub async fn import_workspace(
     } else {
         None
     };
-    if !matches!(bundle.bundle_version, 2 | 3 | PORTABLE_BUNDLE_VERSION) {
+    if !matches!(bundle.bundle_version, 2 | 3 | 4 | PORTABLE_BUNDLE_VERSION) {
         return Err(AppError::new(
             "unsupported_bundle_version",
             format!(
-                "This build supports workspace bundle versions 2, 3 and {PORTABLE_BUNDLE_VERSION}, received {}.",
+                "This build supports workspace bundle versions 2 through {PORTABLE_BUNDLE_VERSION}, received {}.",
                 bundle.bundle_version
             ),
             true,
@@ -468,6 +494,7 @@ pub async fn import_workspace(
         }
     }
     validate_bundle_bodies(&bundle)?;
+    validate_bundle_messages(&bundle)?;
     let proxy_rules = validate_bundle_rules(&bundle, &mode, &state)?;
     let imported_at = now_epoch_millis()?;
 
@@ -489,7 +516,9 @@ pub async fn import_workspace(
         for reference in old_secret_refs {
             let _ = secret_store.delete(&reference);
         }
-        return Ok(import_summary(&bundle));
+        let mut summary = import_summary(&bundle);
+        summary.search_index_warning = rebuild_imported_indexes(&bundle, &state).err().map(|_| "Workspace imported; search indexing failed. Use Rebuild search index in Settings.".into());
+        return Ok(summary);
     }
 
     let mut flow_count = 0usize;
@@ -541,6 +570,11 @@ pub async fn import_workspace(
         }
     }
 
+    for portable in &bundle.websocket_messages {
+        let mut message = portable.message.clone();
+        restore_body(&state, message.body.as_mut(), portable.body_base64.as_deref())?;
+        state.database.upsert_websocket_message(&message, "").map_err(storage_error)?;
+    }
     for collection in &bundle.collections {
         state
             .database
@@ -589,6 +623,8 @@ pub async fn import_workspace(
         map_local_files_omitted: bundle.proxy_rules.iter().filter(|item| item.map_local_file_omitted).count(),
         rule_actions_omitted: bundle.proxy_rules.iter().filter(|item| item.action_omitted).count(),
         proxy_rules_disabled: proxy_rules.len(),
+        websocket_messages: bundle.websocket_messages.len(),
+        search_index_warning: rebuild_imported_indexes(&bundle, &state).err().map(|_| "Workspace imported; search indexing failed. Use Rebuild search index in Settings.".into()),
     })
 }
 
@@ -650,6 +686,12 @@ fn prepare_replacement(
             variable
         })
         .collect();
+    let mut websocket_messages = Vec::with_capacity(bundle.websocket_messages.len());
+    for portable in &bundle.websocket_messages {
+        let mut message = portable.message.clone();
+        restore_body(state, message.body.as_mut(), portable.body_base64.as_deref())?;
+        websocket_messages.push(message);
+    }
     Ok(WorkspaceReplacement {
         sessions,
         collections: bundle.collections.clone(),
@@ -657,6 +699,7 @@ fn prepare_replacement(
         environments: bundle.environments.clone(),
         environment_variables,
         proxy_rules,
+        websocket_messages,
     })
 }
 
@@ -681,6 +724,8 @@ fn import_summary(bundle: &PortableWorkspaceBundle) -> ImportSummary {
         map_local_files_omitted: bundle.proxy_rules.iter().filter(|item| item.map_local_file_omitted).count(),
         rule_actions_omitted: bundle.proxy_rules.iter().filter(|item| item.action_omitted).count(),
         proxy_rules_disabled: bundle.proxy_rules.len(),
+        websocket_messages: bundle.websocket_messages.len(),
+        search_index_warning: None,
     }
 }
 
@@ -723,6 +768,9 @@ fn validate_bundle_bodies(bundle: &PortableWorkspaceBundle) -> Result<(), AppErr
     for session in &bundle.sessions {
         for flow in &session.flows {
             if let Some(detail) = flow.detail.as_ref() {
+                if let Some(protocol) = detail.protocol.as_ref() {
+                    core_model::validate_protocol_details(protocol).map_err(|error| AppError::new("bundle_protocol_invalid", error, true))?;
+                }
                 if detail.proxy_rule_ids.len() > 100 || detail.proxy_rule_changes.len() > 100
                     || detail.proxy_rule_ids.iter().any(|id| id.len() > 120)
                     || detail.proxy_rule_changes.iter().any(|change| {
@@ -749,6 +797,53 @@ fn validate_bundle_bodies(bundle: &PortableWorkspaceBundle) -> Result<(), AppErr
         }
     }
     Ok(())
+}
+
+fn validate_bundle_messages(bundle: &PortableWorkspaceBundle) -> Result<(), AppError> {
+    if bundle.websocket_messages.len() > 100_000 || (bundle.bundle_version < 5 && !bundle.websocket_messages.is_empty()) {
+        return Err(AppError::new("bundle_messages_invalid", "WebSocket messages require bundle v5 and at most 100,000 records.", true));
+    }
+    let flows: std::collections::HashMap<&str, &str> = bundle.sessions.iter().flat_map(|session| session.flows.iter().map(move |flow| (flow.summary.id.as_str(), session.session.id.as_str()))).collect();
+    let mut ids = HashSet::new();
+    for portable in &bundle.websocket_messages {
+        let message = &portable.message;
+        core_model::validate_websocket_message(message).map_err(|error| AppError::new("bundle_messages_invalid", error, true))?;
+        if !ids.insert(&message.id) || !flows.contains_key(message.flow_id.as_str()) || flows.get(message.flow_id.as_str()).copied() != message.session_id.as_deref() {
+            return Err(AppError::new("bundle_messages_invalid", "Duplicate message or mismatched flow/session reference.", true));
+        }
+        if let Some(body) = message.body.as_ref() {
+            let bytes = decode_bundle_body(body, portable.body_base64.as_deref())?;
+            if bytes.len() as u64 != body.byte_size || format!("{:x}", Sha256::digest(&bytes)) != body.sha256.to_ascii_lowercase() {
+                return Err(AppError::new("bundle_messages_invalid", "WebSocket payload size or SHA-256 does not match its metadata.", true));
+            }
+        } else if portable.body_base64.is_some() {
+            return Err(AppError::new("bundle_messages_invalid", "WebSocket payload is missing its body metadata.", true));
+        }
+    }
+    Ok(())
+}
+
+fn rebuild_imported_indexes(bundle: &PortableWorkspaceBundle, state: &State<'_, AppState>) -> Result<(), AppError> {
+    for session in &bundle.sessions {
+        for flow in &session.flows {
+            if let Some(detail) = state.database.get_flow_detail(&flow.summary.id).map_err(storage_error)? {
+                super::search_index::index_flow(&state.database, &state.body_store, &detail)?;
+            }
+        }
+    }
+    for portable in &bundle.websocket_messages { index_imported_message(state, &portable.message)?; }
+    Ok(())
+}
+
+fn index_imported_message(state: &State<'_, AppState>, message: &WebSocketMessage) -> Result<(), AppError> {
+    let text = match message.body.as_ref().filter(|body| !body.is_binary) {
+        Some(body) => {
+            let bytes = state.body_store.read_bounded(&body.sha256, 2 * 1024 * 1024).map_err(storage_error)?;
+            super::search_index::redacted_body_text(&bytes, body.content_type.as_deref())?
+        }
+        None => String::new(),
+    };
+    state.database.set_websocket_search_text(&message.id, &text).map_err(storage_error)
 }
 
 fn validate_replace_references(bundle: &PortableWorkspaceBundle) -> Result<(), AppError> {
@@ -828,16 +923,31 @@ fn decode_bundle_body(reference: &BodyRef, encoded: Option<&str>) -> Result<Vec<
             true,
         ));
     };
-    BASE64.decode(encoded.as_bytes()).map_err(|error| {
+    if encoded.len() > 4 * (2 * 1024 * 1024_usize).div_ceil(3) {
+        return Err(AppError::new("bundle_body_too_large", "Portable payloads must be 2 MiB or smaller.", true));
+    }
+    let bytes = BASE64.decode(encoded.as_bytes()).map_err(|error| {
         AppError::new(
             "bundle_body_invalid",
             format!("Invalid base64 body: {error}"),
             true,
         )
-    })
+    })?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err(AppError::new("bundle_body_too_large", "Portable payloads must be 2 MiB or smaller.", true));
+    }
+    Ok(bytes)
 }
 
 fn redact_flow_detail(detail: &mut FlowDetail) {
+    if let Some(protocol) = detail.protocol.as_mut() {
+        for header in protocol.request_trailers.iter_mut().chain(&mut protocol.response_trailers) {
+            if header.sensitive || replay::is_sensitive_header(&header.name) {
+                header.value = "<redacted>".into();
+                header.sensitive = true;
+            }
+        }
+    }
     detail.proxy_rule_ids.clear();
     detail.proxy_rule_changes.clear();
     if let Some(request) = detail.request.as_mut() {
@@ -913,6 +1023,7 @@ mod tests {
             error_message: None,
             proxy_rule_ids: Vec::new(),
             proxy_rule_changes: Vec::new(),
+            protocol: None,
         };
         redact_flow_detail(&mut detail);
         let request_header = &detail.request.unwrap().headers[0];
@@ -993,6 +1104,58 @@ mod tests {
     }
 
     #[test]
+    fn protocol_bundle_roundtrip_rebuilds_search_and_rejects_orphans() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let root = std::env::temp_dir().join(format!("mas-protocol-bundle-{}-{}", std::process::id(), now_epoch_millis().unwrap()));
+            let state = crate::initialize_state(root.clone(), crate::resolve_addon_path().unwrap()).unwrap();
+            let bytes = serde_json::to_vec(&serde_json::json!({"a_message": "needle", "large": "界".repeat(12_000), "password": "private-secret"})).unwrap();
+            let body = BodyRef { sha256: format!("{:x}", Sha256::digest(&bytes)), byte_size: bytes.len() as u64,
+                content_type: Some("application/json".into()), encoding: None, is_binary: false, is_truncated: false };
+            let mut summary = FlowSummary::fixture("ws-flow", "GET", "example.test", "/ws", 101, 1, 0, "1");
+            summary.session_id = Some("session".into());
+            let detail = FlowDetail { summary: summary.clone(), request: None, response: None, timing: Timing::default(),
+                error_code: None, error_message: None, proxy_rule_ids: vec![], proxy_rule_changes: vec![],
+                protocol: Some(core_model::ProtocolDetails { request_http_version: Some("HTTP/2.0".into()), websocket: true,
+                    response_trailers: vec![HeaderValue { name: "grpc-status".into(), value: "0".into(), sensitive: false }], ..Default::default() }) };
+            let message = WebSocketMessage { id: "ws-msg".into(), flow_id: summary.id.clone(), session_id: summary.session_id.clone(),
+                sequence: 1, from_client: true, opcode: 1, timestamp: "2".into(), dropped: false, injected: false, body: Some(body) };
+            let bundle = PortableWorkspaceBundle { bundle_version: 5, exported_at: "3".into(),
+                sessions: vec![PortableSession { session: CaptureSession { schema_version: SCHEMA_VERSION, id: "session".into(),
+                    name: "Protocol".into(), status: SessionStatus::Completed, started_at: "1".into(), ended_at: Some("3".into()),
+                    device_id: None, app_id: None, connection_strategy: None, capture_engine: None, notes: None,
+                    capture_target: None, capture_mode: None }, flows: vec![PortableFlow { summary, detail: Some(detail),
+                        request_body_base64: None, response_body_base64: None }] }],
+                collections: vec![], saved_requests: vec![], environments: vec![], environment_variables: vec![], proxy_rules: vec![],
+                websocket_messages: vec![PortableWebSocketMessage { message: message.clone(), body_base64: Some(BASE64.encode(&bytes)) }] };
+            import_workspace(bundle, ImportMode::Merge, State(&state)).await.unwrap();
+            assert_eq!(state.database.list_websocket_messages(None, None, Some("needle"), 10, 0).unwrap().len(), 1);
+            assert!(state.database.list_websocket_messages(None, None, Some("private-secret"), 10, 0).unwrap().is_empty());
+            let exported = export_workspace(State(&state)).unwrap();
+            assert!(!serde_json::to_string(&exported).unwrap().contains("search_text"));
+            drop(state);
+            let state = crate::initialize_state(root.clone(), crate::resolve_addon_path().unwrap()).unwrap();
+            assert_eq!(state.database.list_websocket_messages(None, None, None, 10, 0).unwrap(), vec![message.clone()]);
+            import_workspace(exported.clone(), ImportMode::Replace, State(&state)).await.unwrap();
+            assert_eq!(state.database.list_websocket_messages(None, None, Some("needle"), 10, 0).unwrap().len(), 1);
+            let protocol = state.database.get_flow_detail("ws-flow").unwrap().unwrap().protocol.unwrap();
+            assert_eq!(protocol.request_http_version.as_deref(), Some("HTTP/2.0"));
+            assert_eq!(protocol.response_trailers[0].value, "0");
+            let mut orphan = exported.clone();
+            orphan.websocket_messages[0].message.flow_id = "missing".into();
+            orphan.websocket_messages[0].message.session_id = None;
+            assert_eq!(import_workspace(orphan, ImportMode::Merge, State(&state)).await.unwrap_err().code, "bundle_messages_invalid");
+            let oversized = BASE64.encode(vec![0; 2 * 1024 * 1024 + 1]);
+            assert_eq!(decode_bundle_body(message.body.as_ref().unwrap(), Some(&oversized)).unwrap_err().code, "bundle_body_too_large");
+            let mut corrupt = exported;
+            corrupt.websocket_messages[0].body_base64 = Some(BASE64.encode(b"wrong"));
+            assert_eq!(import_workspace(corrupt, ImportMode::Replace, State(&state)).await.unwrap_err().code, "bundle_messages_invalid");
+            assert_eq!(state.database.list_websocket_messages(None, None, None, 10, 0).unwrap(), vec![message]);
+            drop(state);
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
     fn corrupt_replace_bundle_preserves_existing_workspace() {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1063,6 +1226,7 @@ mod tests {
                                 error_message: None,
                                 proxy_rule_ids: Vec::new(),
                                 proxy_rule_changes: Vec::new(),
+            protocol: None,
                             }),
                             request_body_base64: Some("not base64!".into()),
                             response_body_base64: None,
@@ -1073,6 +1237,7 @@ mod tests {
                     environments: vec![],
                     environment_variables: vec![],
                     proxy_rules: vec![],
+                    websocket_messages: Vec::new(),
                 };
 
                 let error = import_workspace(bundle, ImportMode::Replace, State(&state))
@@ -1102,6 +1267,7 @@ mod tests {
                         sort_order: 0,
                     }],
                     proxy_rules: vec![],
+                    websocket_messages: Vec::new(),
                 };
                 let error = import_workspace(orphan_bundle, ImportMode::Replace, State(&state))
                     .await
@@ -1135,6 +1301,7 @@ mod tests {
                     ],
                     environment_variables: vec![],
                     proxy_rules: vec![],
+                    websocket_messages: Vec::new(),
                 };
                 assert!(
                     import_workspace(duplicate_name_bundle, ImportMode::Replace, State(&state))
@@ -1213,6 +1380,7 @@ mod tests {
                         sort_order: 0,
                     }],
                     proxy_rules: vec![],
+                    websocket_messages: Vec::new(),
                 };
                 let result = import_workspace(valid_bundle, ImportMode::Replace, State(&state))
                     .await

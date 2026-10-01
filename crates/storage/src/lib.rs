@@ -1,6 +1,7 @@
 mod detail;
 mod import;
 mod proxy_rules;
+mod websocket;
 mod workflow;
 
 pub use import::{ImportedFlow, ImportedSession, WorkspaceReplacement};
@@ -9,7 +10,7 @@ use core_model::{CaptureSession, FlowSource, FlowSummary, SessionStatus};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{
-    fs, io,
+    fs, io::{self, Read},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -119,7 +120,7 @@ impl Database {
             )?;
             let migrated: bool = if has_migrations {
                 connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 5)",
+                    "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 6)",
                     [],
                     |row| row.get(0),
                 )?
@@ -128,7 +129,7 @@ impl Database {
             };
             if !migrated {
                 let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-                let backup = format!("{}.pre-proxy-rules-{stamp}.bak", path.display());
+                let backup = format!("{}.pre-websocket-{stamp}.bak", path.display());
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::OpenOptionsExt;
@@ -166,6 +167,7 @@ impl Database {
         }
         drop(connection);
         proxy_rules::initialize(self)?;
+        websocket::initialize(self)?;
         Ok(())
     }
 
@@ -482,17 +484,30 @@ impl BodyStore {
     }
 
     pub fn read(&self, sha256: &str) -> Result<Vec<u8>, StorageError> {
+        Ok(fs::read(self.path_for_hash(sha256)?)?)
+    }
+
+    pub fn read_bounded(&self, sha256: &str, max_bytes: usize) -> Result<Vec<u8>, StorageError> {
+        let mut bytes = Vec::new();
+        fs::File::open(self.path_for_hash(sha256)?)?
+            .take(max_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > max_bytes {
+            return Err(StorageError::Io(io::Error::new(io::ErrorKind::InvalidData, "body exceeds read limit")));
+        }
+        Ok(bytes)
+    }
+
+    fn path_for_hash(&self, sha256: &str) -> Result<PathBuf, StorageError> {
         if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(StorageError::InvalidBodyHash);
         }
 
-        let path = self
+        Ok(self
             .root
             .join(&sha256[0..2])
             .join(&sha256[2..4])
-            .join(format!("{sha256}.body"));
-
-        Ok(fs::read(path)?)
+            .join(format!("{sha256}.body")))
     }
 }
 
@@ -520,6 +535,8 @@ mod body_hash_tests {
         }
         let stored = store.put(b"sample body").unwrap();
         assert_eq!(store.read(&stored.sha256).unwrap(), b"sample body");
+        assert!(store.read_bounded(&stored.sha256, 2).is_err());
+        assert_eq!(store.read_bounded(&stored.sha256, 11).unwrap(), b"sample body");
         fs::remove_dir_all(root).unwrap();
     }
 }
@@ -561,7 +578,7 @@ mod capture_metadata_migration_tests {
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .contains("pre-proxy-rules")
+                .contains("pre-websocket")
         }));
 
         let mut current = old_session;
@@ -602,6 +619,7 @@ pub enum StorageError {
     Io(io::Error),
     Json(serde_json::Error),
     InvalidBodyHash,
+    InvalidInput(String),
 }
 
 impl std::fmt::Display for StorageError {
@@ -611,6 +629,7 @@ impl std::fmt::Display for StorageError {
             Self::Io(error) => write!(formatter, "I/O error: {error}"),
             Self::Json(error) => write!(formatter, "JSON error: {error}"),
             Self::InvalidBodyHash => write!(formatter, "invalid body hash"),
+            Self::InvalidInput(message) => write!(formatter, "invalid input: {message}"),
         }
     }
 }

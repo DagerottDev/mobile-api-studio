@@ -1,8 +1,8 @@
-use super::{Database, StorageError, flow_source_to_str, session_status_to_str, workflow};
+use super::{Database, StorageError, flow_source_to_str, session_status_to_str, websocket, workflow};
 use core_model::{
     proxy_rules::ProxyRule,
     CaptureSession, Environment, EnvironmentVariable, FlowDetail, FlowSummary, SavedCollection,
-    SavedRequest,
+    SavedRequest, WebSocketMessage,
 };
 use rusqlite::params;
 
@@ -23,6 +23,7 @@ pub struct WorkspaceReplacement {
     pub environments: Vec<Environment>,
     pub environment_variables: Vec<EnvironmentVariable>,
     pub proxy_rules: Vec<ProxyRule>,
+    pub websocket_messages: Vec<WebSocketMessage>,
 }
 
 impl Database {
@@ -146,6 +147,9 @@ impl Database {
                 "INSERT INTO proxy_rules (id, enabled, priority, created_at, rule_json) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![&rule.id, rule.enabled, rule.priority, &rule.created_at, serde_json::to_string(rule)?],
             )?;
+        }
+        for message in &replacement.websocket_messages {
+            websocket::insert_message(&transaction, message, "")?;
         }
         transaction.commit()?;
         Ok(old_secret_refs)

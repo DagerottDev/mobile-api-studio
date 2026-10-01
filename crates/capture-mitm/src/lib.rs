@@ -3,8 +3,11 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use capture_core::{
     CaptureCapabilities, CaptureConfig, CaptureEngine, CaptureError, CaptureEvent, CaptureHandle,
     CaptureLifecycleState, CapturedBody, CapturedFlow, CapturedRequest, CapturedResponse,
+    CapturedWebSocketMessage,
 };
-use core_model::{CaptureModeKind, FlowSource, FlowSummary, HeaderValue, SCHEMA_VERSION, Timing};
+use core_model::{
+    CaptureModeKind, FlowSource, FlowSummary, HeaderValue, ProtocolDetails, SCHEMA_VERSION, Timing,
+};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
@@ -22,6 +25,8 @@ use tokio::{
 };
 
 const EVENT_PREFIX: &str = "MAS_EVENT ";
+const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PROTOCOL_TEXT: usize = 1024;
 
 fn mode_spec(mode: &CaptureModeKind) -> String {
     match mode {
@@ -77,11 +82,19 @@ impl MitmDumpEngine {
     }
 
     pub async fn is_running(&self, handle: &CaptureHandle) -> bool {
-        self.children.lock().await.get_mut(&handle.id)
+        self.children
+            .lock()
+            .await
+            .get_mut(&handle.id)
             .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
     }
 
-    async fn spawn_stdout_reader(&self, stdout: tokio::process::ChildStdout, session_id: String, ready: oneshot::Sender<()>) {
+    async fn spawn_stdout_reader(
+        &self,
+        stdout: tokio::process::ChildStdout,
+        session_id: String,
+        ready: oneshot::Sender<()>,
+    ) {
         let sender = self.sender.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
@@ -93,7 +106,9 @@ impl MitmDumpEngine {
 
                 match serde_json::from_str::<BridgeEvent>(payload) {
                     Ok(BridgeEvent::EngineStarted) => {
-                        if let Some(ready) = ready.take() { let _ = ready.send(()); }
+                        if let Some(ready) = ready.take() {
+                            let _ = ready.send(());
+                        }
                     }
                     Ok(event) => publish_bridge_event(&sender, &session_id, event),
                     Err(error) => {
@@ -202,7 +217,10 @@ impl CaptureEngine for MitmDumpEngine {
 
         let mode = mode_spec(&config.mode.kind);
         command.arg("--mode").arg(&mode);
-        if !matches!(config.mode.kind, CaptureModeKind::LocalAll | CaptureModeKind::LocalProcess { .. }) {
+        if !matches!(
+            config.mode.kind,
+            CaptureModeKind::LocalAll | CaptureModeKind::LocalProcess { .. }
+        ) {
             command.arg("--listen-host").arg(&config.listen_host);
             command
                 .arg("--listen-port")
@@ -246,11 +264,25 @@ impl CaptureEngine for MitmDumpEngine {
         };
         if let Err(message) = startup {
             let _ = child.kill().await;
-            let _ = self.sender.send(CaptureEvent::LifecycleChanged(CaptureLifecycleState::Failed));
-            return Err(CaptureError::new("mitmdump_listener_start_failed", message, true));
+            let _ = self.sender.send(CaptureEvent::LifecycleChanged(
+                CaptureLifecycleState::Failed,
+            ));
+            return Err(CaptureError::new(
+                "mitmdump_listener_start_failed",
+                message,
+                true,
+            ));
         }
-        if child.try_wait().map_err(|error| CaptureError::new("mitmdump_status_failed", error.to_string(), true))?.is_some() {
-            return Err(CaptureError::new("mitmdump_listener_start_failed", "Capture engine exited during startup.", true));
+        if child
+            .try_wait()
+            .map_err(|error| CaptureError::new("mitmdump_status_failed", error.to_string(), true))?
+            .is_some()
+        {
+            return Err(CaptureError::new(
+                "mitmdump_listener_start_failed",
+                "Capture engine exited during startup.",
+                true,
+            ));
         }
         self.children.lock().await.insert(handle_id.clone(), child);
 
@@ -261,7 +293,9 @@ impl CaptureEngine for MitmDumpEngine {
             loop {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 let mut children = children.lock().await;
-                let Some(child) = children.get_mut(&monitored_id) else { break };
+                let Some(child) = children.get_mut(&monitored_id) else {
+                    break;
+                };
                 if !matches!(child.try_wait(), Ok(None)) {
                     children.remove(&monitored_id);
                     let _ = sender.send(CaptureEvent::EngineFailed {
@@ -269,7 +303,9 @@ impl CaptureEngine for MitmDumpEngine {
                         message: "Capture engine stopped unexpectedly. Disconnect to restore the capture settings before reconnecting.".into(),
                         recoverable: true,
                     });
-                    let _ = sender.send(CaptureEvent::LifecycleChanged(CaptureLifecycleState::Failed));
+                    let _ = sender.send(CaptureEvent::LifecycleChanged(
+                        CaptureLifecycleState::Failed,
+                    ));
                     break;
                 }
             }
@@ -333,6 +369,25 @@ enum BridgeEvent {
         proxy_rule_ids: Vec<String>,
         #[serde(default)]
         proxy_rule_changes: Vec<core_model::ProxyRuleChange>,
+        protocol: Option<ProtocolDetails>,
+    },
+    WebSocketMessage {
+        id: String,
+        flow_id: String,
+        session_id: Option<String>,
+        sequence: u64,
+        from_client: bool,
+        opcode: u8,
+        timestamp: String,
+        dropped: bool,
+        injected: bool,
+        body: Option<BridgeBody>,
+    },
+    WebSocketClosed {
+        flow_id: String,
+        close_code: Option<u16>,
+        close_reason: Option<String>,
+        closed_by_client: Option<bool>,
     },
     FlowFailed {
         id: String,
@@ -403,7 +458,7 @@ fn publish_bridge_event(
     event: BridgeEvent,
 ) {
     match event {
-        BridgeEvent::EngineStarted => {},
+        BridgeEvent::EngineStarted => {}
         BridgeEvent::FlowCompleted {
             id,
             started_at,
@@ -415,6 +470,7 @@ fn publish_bridge_event(
             mock_rule_name: _,
             proxy_rule_ids,
             proxy_rule_changes,
+            protocol,
         } => match normalize_captured_flow(
             session_id,
             id,
@@ -426,6 +482,7 @@ fn publish_bridge_event(
             mock_rule_id.is_some(),
             proxy_rule_ids,
             proxy_rule_changes,
+            protocol,
         ) {
             Ok(flow) => {
                 let _ = sender.send(CaptureEvent::FlowDetailCompleted(flow));
@@ -438,6 +495,81 @@ fn publish_bridge_event(
                 });
             }
         },
+        BridgeEvent::WebSocketMessage {
+            id,
+            flow_id,
+            session_id: _,
+            sequence,
+            from_client,
+            opcode,
+            timestamp,
+            dropped,
+            injected,
+            body,
+        } => {
+            let normalized = (|| {
+                if id.chars().count() > MAX_PROTOCOL_TEXT
+                    || flow_id.chars().count() > MAX_PROTOCOL_TEXT
+                    || !matches!(opcode, 1 | 2)
+                    || sequence == 0
+                    || timestamp.len() > 32
+                    || !timestamp.bytes().all(|byte| byte.is_ascii_digit())
+                {
+                    return Err("invalid WebSocket message metadata".to_string());
+                }
+                let mut body = decode_body(body)?.ok_or("WebSocket message missing body")?;
+                let text = opcode == 1 && std::str::from_utf8(&body.bytes).is_ok();
+                body.is_binary = !text;
+                body.content_type = Some(
+                    if text {
+                        "text/plain"
+                    } else {
+                        "application/octet-stream"
+                    }
+                    .into(),
+                );
+                body.encoding = None;
+                Ok(CapturedWebSocketMessage {
+                    id,
+                    flow_id,
+                    session_id: Some(session_id.to_string()),
+                    sequence,
+                    from_client,
+                    opcode,
+                    timestamp,
+                    dropped,
+                    injected,
+                    body: Some(body),
+                })
+            })();
+            match normalized {
+                Ok(message) => {
+                    let _ = sender.send(CaptureEvent::WebSocketMessage(message));
+                }
+                Err(message) => {
+                    let _ = sender.send(CaptureEvent::EngineFailed {
+                        code: "mitm_websocket_normalize_failed".into(),
+                        message,
+                        recoverable: true,
+                    });
+                }
+            }
+        }
+        BridgeEvent::WebSocketClosed {
+            flow_id,
+            close_code,
+            close_reason,
+            closed_by_client,
+        } => {
+            if flow_id.chars().count() <= MAX_PROTOCOL_TEXT {
+                let _ = sender.send(CaptureEvent::WebSocketClosed {
+                    flow_id,
+                    close_code,
+                    close_reason: close_reason.map(|value| bounded_text(value)),
+                    closed_by_client,
+                });
+            }
+        }
         BridgeEvent::FlowFailed {
             id,
             code,
@@ -465,9 +597,19 @@ fn publish_bridge_event(
                 recoverable: true,
             });
         }
-        BridgeEvent::ProxyRulesFailed { code, message, rule_id } => {
-            let message = rule_id.map(|id| format!("Proxy rule {id}: {message}")).unwrap_or(message);
-            let _ = sender.send(CaptureEvent::EngineFailed { code, message, recoverable: true });
+        BridgeEvent::ProxyRulesFailed {
+            code,
+            message,
+            rule_id,
+        } => {
+            let message = rule_id
+                .map(|id| format!("Proxy rule {id}: {message}"))
+                .unwrap_or(message);
+            let _ = sender.send(CaptureEvent::EngineFailed {
+                code,
+                message,
+                recoverable: true,
+            });
         }
     }
 }
@@ -484,6 +626,7 @@ fn normalize_captured_flow(
     mocked: bool,
     proxy_rule_ids: Vec<String>,
     proxy_rule_changes: Vec<core_model::ProxyRuleChange>,
+    protocol: Option<ProtocolDetails>,
 ) -> Result<CapturedFlow, String> {
     let request_body = decode_body(request.body)?;
     let response_body = decode_body(response.body)?;
@@ -537,7 +680,70 @@ fn normalize_captured_flow(
         error_message: None,
         proxy_rule_ids,
         proxy_rule_changes,
+        protocol: protocol.map(normalize_protocol),
     })
+}
+
+fn bounded_text(value: String) -> String {
+    value.chars().take(MAX_PROTOCOL_TEXT).collect()
+}
+
+fn normalize_protocol(mut protocol: ProtocolDetails) -> ProtocolDetails {
+    protocol.request_http_version = protocol.request_http_version.map(bounded_text);
+    protocol.response_http_version = protocol.response_http_version.map(bounded_text);
+    for trailers in [
+        &mut protocol.request_trailers,
+        &mut protocol.response_trailers,
+    ] {
+        trailers.truncate(64);
+        for header in trailers.iter_mut() {
+            header.name = bounded_text(std::mem::take(&mut header.name));
+            header.value = bounded_text(std::mem::take(&mut header.value));
+            header.sensitive = is_sensitive_header(&header.name);
+        }
+    }
+    for connection in [
+        &mut protocol.client_connection,
+        &mut protocol.server_connection,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        connection.id = bounded_text(std::mem::take(&mut connection.id));
+        connection.transport = bounded_text(std::mem::take(&mut connection.transport));
+        for field in [
+            &mut connection.peer_address,
+            &mut connection.local_address,
+            &mut connection.server_address,
+            &mut connection.tls_version,
+            &mut connection.cipher,
+            &mut connection.alpn,
+            &mut connection.sni,
+            &mut connection.started_at,
+            &mut connection.tls_established_at,
+            &mut connection.ended_at,
+        ] {
+            *field = field.take().map(bounded_text);
+        }
+        connection.peer_certificates.truncate(16);
+        for cert in &mut connection.peer_certificates {
+            for field in [
+                &mut cert.subject,
+                &mut cert.issuer,
+                &mut cert.not_before,
+                &mut cert.not_after,
+                &mut cert.sha256,
+            ] {
+                *field = bounded_text(std::mem::take(field));
+            }
+            cert.subject_alternative_names.truncate(64);
+            for name in &mut cert.subject_alternative_names {
+                *name = bounded_text(std::mem::take(name));
+            }
+        }
+    }
+    protocol.websocket_close_reason = protocol.websocket_close_reason.map(bounded_text);
+    protocol
 }
 
 fn normalize_headers(headers: Vec<BridgeHeader>) -> Vec<HeaderValue> {
@@ -568,9 +774,15 @@ fn decode_body(body: Option<BridgeBody>) -> Result<Option<CapturedBody>, String>
     let Some(body) = body else {
         return Ok(None);
     };
+    if body.data_base64.len() > (MAX_BODY_BYTES + 2) / 3 * 4 + 4 {
+        return Err("mitm bridge body exceeds capture limit".into());
+    }
     let bytes = BASE64
         .decode(body.data_base64.as_bytes())
         .map_err(|error| format!("invalid base64 body from mitm bridge: {error}"))?;
+    if bytes.len() > MAX_BODY_BYTES {
+        return Err("mitm bridge body exceeds capture limit".into());
+    }
 
     Ok(Some(CapturedBody {
         bytes,
@@ -619,12 +831,25 @@ mod tests {
 
     #[test]
     fn mitmdump_mode_specs() {
-        assert_eq!(mode_spec(&CaptureModeKind::ReverseProxy { url: "https://example.com".into() }), "reverse:https://example.com");
-        assert_eq!(mode_spec(&CaptureModeKind::UpstreamProxy { url: "http://127.0.0.1:8080".into() }), "upstream:http://127.0.0.1:8080");
+        assert_eq!(
+            mode_spec(&CaptureModeKind::ReverseProxy {
+                url: "https://example.com".into()
+            }),
+            "reverse:https://example.com"
+        );
+        assert_eq!(
+            mode_spec(&CaptureModeKind::UpstreamProxy {
+                url: "http://127.0.0.1:8080".into()
+            }),
+            "upstream:http://127.0.0.1:8080"
+        );
         assert_eq!(mode_spec(&CaptureModeKind::Socks5), "socks5");
         assert_eq!(mode_spec(&CaptureModeKind::DnsProxy), "dns");
         assert_eq!(mode_spec(&CaptureModeKind::RegularProxy), "regular");
         assert_eq!(mode_spec(&CaptureModeKind::LocalAll), "local");
-        assert_eq!(mode_spec(&CaptureModeKind::LocalProcess { pid: 42 }), "local:42");
+        assert_eq!(
+            mode_spec(&CaptureModeKind::LocalProcess { pid: 42 }),
+            "local:42"
+        );
     }
 }

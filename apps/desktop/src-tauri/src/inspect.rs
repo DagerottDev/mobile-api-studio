@@ -1,7 +1,7 @@
 use super::{replay_commands::redact_detail_for_ui, AppState};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use capture_core::{CapturedBody, CapturedFlow, CaptureEvent};
-use core_model::{AppError, BodyRef, FlowDetail, RequestDetail, ResponseDetail};
+use capture_core::CaptureEvent;
+use core_model::{AppError, FlowDetail, WebSocketMessage};
 use sdk_protocol::SDK_CORRELATION_HEADER;
 use serde::Serialize;
 use storage::{BodyStore, Database};
@@ -31,21 +31,14 @@ pub fn get_flow_detail(
 pub fn read_body(sha256: String, state: State<'_, AppState>) -> Result<BodyPayload, AppError> {
     let bytes = state
         .body_store
-        .read(&sha256)
+        .read_bounded(&sha256, 2 * 1024 * 1024)
         .map_err(|error| AppError::storage(error.to_string()))?;
 
-    match String::from_utf8(bytes.clone()) {
-        Ok(text) => Ok(BodyPayload {
-            sha256,
-            text: Some(text),
-            base64: None,
-        }),
-        Err(_) => Ok(BodyPayload {
-            sha256,
-            text: None,
-            base64: Some(BASE64.encode(bytes)),
-        }),
-    }
+    Ok(BodyPayload {
+        sha256,
+        text: std::str::from_utf8(&bytes).ok().map(str::to_owned),
+        base64: Some(BASE64.encode(bytes)),
+    })
 }
 
 #[tauri::command]
@@ -92,84 +85,19 @@ pub fn export_curl(flow_id: String, state: State<'_, AppState>) -> Result<String
     Ok(parts.join(" "))
 }
 
-pub(super) fn ingest_capture_event(
-    database: &Database,
-    body_store: &BodyStore,
-    event: CaptureEvent,
-) -> Result<(), AppError> {
-    match event {
-        CaptureEvent::FlowDetailCompleted(flow) => persist_captured_flow(database, body_store, flow),
-        CaptureEvent::FlowStarted(flow)
-        | CaptureEvent::FlowUpdated(flow)
-        | CaptureEvent::FlowCompleted(flow) => database
-            .upsert_flow(&flow)
-            .map_err(|error| AppError::storage(error.to_string())),
-        CaptureEvent::FlowFailed { .. }
-        | CaptureEvent::LifecycleChanged(_)
-        | CaptureEvent::EngineReady(_)
-        | CaptureEvent::EngineFailed { .. }
-        | CaptureEvent::EngineStopped => Ok(()),
-    }
+pub(super) fn ingest_capture_event(database: &Database, body_store: &BodyStore, event: CaptureEvent) -> Result<(), AppError> {
+    app_core::ingest_capture_event_for_storage(database, body_store, event)
 }
 
-fn persist_captured_flow(
-    database: &Database,
-    body_store: &BodyStore,
-    flow: CapturedFlow,
-) -> Result<(), AppError> {
-    let request_body = store_body(body_store, flow.request.body)?;
-    let response = match flow.response {
-        Some(response) => Some(ResponseDetail {
-            status_code: response.status_code,
-            reason: response.reason,
-            headers: response.headers,
-            body: store_body(body_store, response.body)?,
-        }),
-        None => None,
-    };
-
-    let detail = FlowDetail {
-        summary: flow.summary,
-        request: Some(RequestDetail {
-            method: flow.request.method,
-            url: flow.request.url,
-            scheme: flow.request.scheme,
-            host: flow.request.host,
-            port: flow.request.port,
-            path: flow.request.path,
-            query: flow.request.query,
-            headers: flow.request.headers,
-            body: request_body,
-        }),
-        response,
-        timing: flow.timing,
-        error_code: flow.error_code,
-        error_message: flow.error_message,
-        proxy_rule_ids: flow.proxy_rule_ids,
-        proxy_rule_changes: flow.proxy_rule_changes,
-    };
-
-    database
-        .upsert_flow_detail(&detail)
-        .map_err(|error| AppError::storage(error.to_string()))
+#[tauri::command]
+pub fn list_websocket_messages(flow_id: Option<String>, session_id: Option<String>, text: Option<String>, limit: Option<usize>, offset: Option<usize>, state: State<'_, AppState>) -> Result<Vec<WebSocketMessage>, AppError> {
+    state.database.list_websocket_messages(flow_id.as_deref(), session_id.as_deref(), text.as_deref(), limit.unwrap_or(200), offset.unwrap_or(0)).map_err(|error| AppError::storage(error.to_string()))
 }
 
-fn store_body(body_store: &BodyStore, body: Option<CapturedBody>) -> Result<Option<BodyRef>, AppError> {
-    let Some(body) = body else {
-        return Ok(None);
-    };
-    let stored = body_store
-        .put(&body.bytes)
-        .map_err(|error| AppError::storage(error.to_string()))?;
-
-    Ok(Some(BodyRef {
-        sha256: stored.sha256,
-        byte_size: stored.byte_size,
-        content_type: body.content_type,
-        encoding: body.encoding,
-        is_binary: body.is_binary,
-        is_truncated: body.is_truncated,
-    }))
+#[tauri::command]
+pub fn decode_protocol_body(sha256: String, content_type: String, descriptor_base64: Option<String>, message_type: Option<String>, state: State<'_, AppState>) -> Result<app_core::ProtocolInspection, AppError> {
+    let bytes = state.body_store.read_bounded(&sha256, 2 * 1024 * 1024).map_err(|error| AppError::storage(error.to_string()))?;
+    app_core::inspect_protocol_bytes(&bytes, content_type, descriptor_base64.as_deref(), message_type.as_deref())
 }
 
 fn shell_quote(value: &str) -> String {

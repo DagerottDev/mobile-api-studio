@@ -1,5 +1,5 @@
 import { invoke } from "../api/invoke";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ConnectionDoctorReport,
   ImportMode,
@@ -40,6 +40,8 @@ export function SettingsView() {
   const [importMode, setImportMode] = useState<ImportMode>("merge");
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [busy, setBusy] = useState(false);
+  const [indexBusy, setIndexBusy] = useState(false);
+  const indexCancelled = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -89,7 +91,7 @@ export function SettingsView() {
       const bundle = await invoke<PortableWorkspaceBundle>("export_workspace");
       const json = JSON.stringify(bundle, null, 2);
       setBundleText(json);
-      setMessage(`Review this bundle snapshot before downloading: ${bundle.sessions.length} sessions, ${bundle.collections.length} collections, ${bundle.environments.length} environments, and ${bundle.proxyRules.length} proxy rules.`);
+      setMessage(`Review this bundle snapshot before downloading: ${bundle.sessions.length} sessions, ${bundle.collections.length} collections, ${bundle.environments.length} environments, ${bundle.proxyRules.length} proxy rules, and ${bundle.websocketMessages?.length ?? 0} WebSocket messages.`);
       setError(null);
     } catch (value) {
       setError(formatInvokeError(value));
@@ -132,6 +134,25 @@ export function SettingsView() {
     }
   }
 
+  async function rebuildIndex() {
+    setIndexBusy(true); indexCancelled.current = false;
+    let processed = 0;
+    try {
+      for (const phase of ["flows", "websocket"]) {
+        let offset = 0;
+        while (!indexCancelled.current) {
+          const progress = await invoke<{ processed: number; nextOffset: number; done: boolean }>("rebuild_search_index", { phase, offset });
+          processed += progress.processed; offset = progress.nextOffset;
+          setMessage(`Indexed ${processed} local records.`);
+          if (progress.done) break;
+        }
+      }
+      setMessage(`${indexCancelled.current ? "Stopped rebuilding" : "Rebuilt"} local search: ${processed} records processed.`);
+      setError(null);
+    } catch (value) { setError(formatInvokeError(value)); }
+    finally { setIndexBusy(false); }
+  }
+
   async function importBundle() {
     if (!importText.trim()) return;
     if (
@@ -151,7 +172,7 @@ export function SettingsView() {
       setMessage(
         `Imported ${summary.sessions} sessions, ${summary.flows} flows, and ${summary.proxyRules} proxy rules. ${summary.proxyRulesDisabled} imported rules are disabled until reviewed. ${summary.secretValuesOmitted} secret values require re-entry.`,
       );
-      setError(null);
+      setError(summary.searchIndexWarning ?? null);
     } catch (value) {
       setError(formatInvokeError(value));
     } finally {
@@ -242,6 +263,11 @@ export function SettingsView() {
         </div>
       </div>
 
+      <div className="panel settings-panel">
+        <div className="panel-heading"><div><strong>Local search index</strong><span>Redacted headers, trailers and JSON/form bodies. Binary and unstructured text stay in the raw viewer. The index is excluded from exports.</span></div></div>
+        <button className="secondary compact" disabled={indexBusy || busy} onClick={() => void rebuildIndex()}>Rebuild local search</button>
+        {indexBusy ? <button className="secondary compact" onClick={() => { indexCancelled.current = true; }}>Stop after current batch</button> : null}
+      </div>
       <div className="panel settings-panel bundle-panel">
         <div className="panel-heading">
           <div>
@@ -254,7 +280,7 @@ export function SettingsView() {
         </div>
         <div className="privacy-note">
           <strong>Review before download:</strong> environment secret values, Keychain references, sensitive rule actions,
-          Map Local files, and rule audit metadata are omitted; sensitive headers are redacted. Captured request/response bodies are included
+          Map Local files, and rule audit metadata are omitted; sensitive headers and trailers are redacted. Captured HTTP and WebSocket bodies, protocol and public connection details are included
           and may contain application data. Imported proxy rules start disabled.
         </div>
         {bundleText ? (

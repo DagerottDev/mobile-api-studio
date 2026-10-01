@@ -5,7 +5,7 @@ use core_model::{
     TrafficSearchResult,
 };
 use rusqlite::{params, Connection, OptionalExtension};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const MIGRATION_003: &str = r#"
 CREATE TABLE IF NOT EXISTS flow_endpoint_index (
@@ -195,10 +195,21 @@ impl Database {
             .map(|session| (session.id, session.name))
             .collect::<HashMap<_, _>>();
         let needle = query.text.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_lowercase);
+        if needle.as_ref().is_some_and(|value| value.len() > 256) {
+            return Err(StorageError::InvalidInput("Traffic search text exceeds 256 bytes".into()));
+        }
+        let derived_matches: HashSet<String> = if let Some(needle) = needle.as_deref() {
+            let connection = self.connection()?;
+            let mut statement = connection.prepare(
+                "SELECT f.id FROM (SELECT id FROM flows ORDER BY started_at DESC LIMIT 10000) f WHERE EXISTS (SELECT 1 FROM flow_search_text s WHERE s.flow_id=f.id AND instr(lower(s.redacted_text), ?1)>0) OR EXISTS (SELECT 1 FROM websocket_messages w WHERE w.flow_id=f.id AND instr(lower(w.search_text), ?1)>0)",
+            )?;
+            statement.query_map([needle], |row| row.get(0))?.collect::<Result<_, _>>()?
+        } else { HashSet::new() };
         let method = query.method.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_uppercase);
         let endpoint_key = query.endpoint_key.as_deref().map(str::trim).filter(|value| !value.is_empty());
 
         let mut results = Vec::new();
+        // ponytail: scan newest 10,000 flows; use database-wide search if that ceiling matters.
         for flow in self.list_flows(10_000)? {
             if let Some(session_id) = query.session_id.as_deref() {
                 if flow.session_id.as_deref() != Some(session_id) {
@@ -238,12 +249,12 @@ impl Database {
                     "{} {} {} {} {}",
                     flow.method,
                     flow.host,
-                    flow.path,
+                    flow.path.split('?').next().unwrap_or(&flow.path),
                     endpoint.path_template,
                     session_name.as_deref().unwrap_or_default(),
                 )
                 .to_lowercase();
-                if !haystack.contains(needle) {
+                if !haystack.contains(needle) && !derived_matches.contains(&flow.id) {
                     continue;
                 }
             }

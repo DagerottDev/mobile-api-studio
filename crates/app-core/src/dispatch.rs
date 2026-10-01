@@ -152,6 +152,17 @@ pub async fn invoke(command: &str, args: Value, state: &AppState) -> Result<Valu
             let flow_id = input(&args, "flowId")?;
             output(crate::inspect::get_flow_detail(flow_id, State(state))?)
         }
+        "decode_protocol_body" => {
+            output(crate::protocol_commands::decode_protocol_body(input(&args, "sha256")?, input(&args, "contentType")?, input(&args, "descriptorBase64")?, input(&args, "messageType")?, State(state))?)
+        }
+        "list_websocket_messages" => {
+            output(crate::inspect::list_websocket_messages(input(&args, "flowId")?, input(&args, "sessionId")?, input(&args, "text")?, input(&args, "limit")?, input(&args, "offset")?, State(state))?)
+        }
+        "rebuild_search_index" => {
+            let phase: Option<String> = input(&args, "phase")?;
+            let offset: Option<usize> = input(&args, "offset")?;
+            output(crate::search_index::rebuild(&state.database, &state.body_store, phase.as_deref().unwrap_or("flows"), offset.unwrap_or(0))?)
+        }
         "read_body" => {
             let sha256 = input(&args, "sha256")?;
             output(crate::inspect::read_body(sha256, State(state))?)

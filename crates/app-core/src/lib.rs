@@ -6,6 +6,10 @@ mod fixture_commands;
 mod inspect;
 mod mock_commands;
 mod proxy_rule_commands;
+mod protocol_commands;
+mod search_index;
+pub use inspect::ingest_capture_event as ingest_capture_event_for_storage;
+pub use protocol_commands::{inspect_bytes as inspect_protocol_bytes, ProtocolInspection};
 #[cfg(unix)]
 mod rule_server;
 mod replay_commands;
@@ -609,9 +613,10 @@ fn validate_proxy_listener_mode(mode: &CaptureModeKind) -> Result<(), AppError> 
     match mode {
         CaptureModeKind::ReverseProxy { url } | CaptureModeKind::UpstreamProxy { url } => {
             let parsed = Url::parse(url).map_err(|error| AppError::new("proxy_listener_url_invalid", error.to_string(), true))?;
-            if url.len() > 2048 || url.chars().any(char::is_control) || !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none()
-                || !parsed.username().is_empty() || parsed.password().is_some() || parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
-                return Err(AppError::new("proxy_listener_url_invalid", "Use a credential-free HTTP(S) host URL without path, query, or fragment.", true));
+            let reverse_h3 = matches!(mode, CaptureModeKind::ReverseProxy { .. }) && parsed.scheme() == "http3";
+            if url.len() > 2048 || url.chars().any(char::is_control) || !(matches!(parsed.scheme(), "http" | "https") || reverse_h3) || parsed.host_str().is_none()
+                || !parsed.username().is_empty() || parsed.password().is_some() || !matches!(parsed.path(), "" | "/") || parsed.query().is_some() || parsed.fragment().is_some() {
+                return Err(AppError::new("proxy_listener_url_invalid", "Use a credential-free host URL without path, query, or fragment: HTTP(S), or http3:// for reverse capture.", true));
             }
             Ok(())
         }

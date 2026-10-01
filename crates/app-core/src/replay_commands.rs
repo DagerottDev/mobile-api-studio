@@ -164,6 +164,7 @@ pub async fn send_replay(
         error_message: None,
         proxy_rule_ids: Vec::new(),
         proxy_rule_changes: Vec::new(),
+        protocol: None,
     };
 
     state
@@ -600,6 +601,14 @@ fn store_body_ref(
 }
 
 pub(super) fn redact_detail_for_ui(mut detail: FlowDetail) -> FlowDetail {
+    if let Some(protocol) = detail.protocol.as_mut() {
+        for header in protocol.request_trailers.iter_mut().chain(&mut protocol.response_trailers) {
+            if header.sensitive || replay::is_sensitive_header(&header.name) {
+                header.value = "<redacted>".into();
+                header.sensitive = true;
+            }
+        }
+    }
     if let Some(request) = detail.request.as_mut() {
         for header in &mut request.headers {
             if header.sensitive {

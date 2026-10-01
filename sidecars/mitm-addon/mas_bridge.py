@@ -87,6 +87,62 @@ def _headers(headers) -> list[dict]:
     return [{"name": name, "value": value} for name, value in headers.items(multi=True)]
 
 
+def _bounded(value, limit: int = 1024) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")[:limit]
+    return str(value)[:limit]
+
+
+def _address(value) -> str | None:
+    if not value:
+        return None
+    host, port = value[:2]
+    host = str(host)
+    return _bounded(f"[{host}]:{port}" if ":" in host else f"{host}:{port}")
+
+
+def _certificate(cert) -> dict:
+    return {
+        "subject": _bounded(", ".join(f"{key}={value}" for key, value in cert.subject)),
+        "issuer": _bounded(", ".join(f"{key}={value}" for key, value in cert.issuer)),
+        "notBefore": _bounded(cert.notbefore.isoformat()),
+        "notAfter": _bounded(cert.notafter.isoformat()),
+        "sha256": cert.fingerprint().hex(),
+        "subjectAlternativeNames": [_bounded(name.value) for name in list(cert.altnames)[:64]],
+    }
+
+
+def _connection(conn) -> dict | None:
+    if conn is None:
+        return None
+    return {
+        "id": _bounded(conn.id),
+        "transport": _bounded(conn.transport_protocol),
+        "peerAddress": _address(conn.peername),
+        "localAddress": _address(conn.sockname),
+        "serverAddress": _address(getattr(conn, "address", None)),
+        "tlsVersion": _bounded(conn.tls_version),
+        "cipher": _bounded(conn.cipher),
+        "alpn": _bounded(conn.alpn),
+        "sni": _bounded(conn.sni),
+        "tlsEstablished": conn.tls_established,
+        "startedAt": str(_millis(conn.timestamp_start)) if conn.timestamp_start is not None else None,
+        "tlsEstablishedAt": str(_millis(conn.timestamp_tls_setup)) if conn.timestamp_tls_setup is not None else None,
+        "endedAt": str(_millis(conn.timestamp_end)) if conn.timestamp_end is not None else None,
+        "peerCertificates": [_certificate(cert) for cert in conn.certificate_list[:16]],
+    }
+
+
+def _trailers(headers) -> list[dict]:
+    if headers is None:
+        return []
+    sensitive = {"authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "api-key", "x-auth-token"}
+    return [{"name": _bounded(name), "value": _bounded(value), "sensitive": name.lower() in sensitive}
+            for name, value in list(headers.items(multi=True))[:64]]
+
+
 def _is_binary(content_type: str | None, encoding: str | None) -> bool:
     if encoding and encoding.lower() not in ("identity", ""):
         return True
@@ -860,6 +916,15 @@ async def response(flow: http.HTTPFlow) -> None:
         "download_ms": _duration_ms(response.timestamp_start, response.timestamp_end),
         "total_ms": _duration_ms(request.timestamp_start, response.timestamp_end),
     }
+    protocol_payload = {
+        "requestHttpVersion": _bounded(request.http_version),
+        "responseHttpVersion": _bounded(response.http_version),
+        "requestTrailers": _trailers(request.trailers),
+        "responseTrailers": _trailers(response.trailers),
+        "clientConnection": _connection(flow.client_conn),
+        "serverConnection": _connection(flow.server_conn),
+        "websocket": flow.websocket is not None,
+    }
 
     _emit({
         "type": "flow_completed",
@@ -870,10 +935,57 @@ async def response(flow: http.HTTPFlow) -> None:
         "request": request_payload,
         "response": response_payload,
         "timing": timing_payload,
+        "protocol": protocol_payload,
         "mock_rule_id": flow.metadata.get("mas_mock_rule_id"),
         "mock_rule_name": flow.metadata.get("mas_mock_rule_name"),
         "proxy_rule_ids": flow.metadata.get("mas_proxy_rule_ids", []),
         "proxy_rule_changes": flow.metadata.get("mas_proxy_rule_changes", []),
+    })
+
+
+def websocket_message(flow: http.HTTPFlow) -> None:
+    ws = flow.websocket
+    if ws is None or not ws.messages:
+        return
+    message = ws.messages[-1]
+    sequence = int(flow.metadata.get("mas_websocket_sequence", 0)) + 1
+    flow.metadata["mas_websocket_sequence"] = sequence
+    opcode = int(message.type)
+    try:
+        valid_text = opcode == 1 and message.content.decode("utf-8") is not None
+    except UnicodeDecodeError:
+        valid_text = False
+    body = _body(message.content, "text/plain" if valid_text else "application/octet-stream", None)
+    if body is not None:
+        body["is_binary"] = not valid_text
+    _emit({
+        "type": "websocket_message",
+        "id": f"{flow.id}:{sequence}",
+        "flow_id": flow.id,
+        "session_id": SESSION_ID,
+        "sequence": sequence,
+        "from_client": message.from_client,
+        "opcode": opcode,
+        "timestamp": str(_millis(message.timestamp) or 0),
+        "dropped": message.dropped,
+        "injected": message.injected,
+        "body": body,
+    })
+    # ponytail: mitmproxy retains only the latest message here; one in-flight message may exceed 2 MiB before our capture truncates it.
+    # The WebSocket layer forwards from its own message reference after this hook (mitmproxy 12.2.3).
+    del ws.messages[:-1]
+
+
+def websocket_end(flow: http.HTTPFlow) -> None:
+    ws = flow.websocket
+    if ws is None:
+        return
+    _emit({
+        "type": "websocket_closed",
+        "flow_id": flow.id,
+        "close_code": ws.close_code,
+        "close_reason": _bounded(ws.close_reason),
+        "closed_by_client": ws.closed_by_client,
     })
 
 
