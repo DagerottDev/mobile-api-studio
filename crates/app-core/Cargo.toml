@@ -27,4 +27,5 @@ serde.workspace = true
 serde_json.workspace = true
 storage = { path = "../storage" }
 tokio.workspace = true
+url = "2.5"
 workspace-core = { path = "../workspace-core" }

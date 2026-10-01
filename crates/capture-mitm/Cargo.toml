@@ -12,4 +12,4 @@ capture-core = { path = "../capture-core" }
 core-model = { path = "../core-model" }
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["macros"] }

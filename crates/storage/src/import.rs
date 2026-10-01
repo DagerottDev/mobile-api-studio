@@ -1,5 +1,6 @@
 use super::{Database, StorageError, flow_source_to_str, session_status_to_str, workflow};
 use core_model::{
+    proxy_rules::ProxyRule,
     CaptureSession, Environment, EnvironmentVariable, FlowDetail, FlowSummary, SavedCollection,
     SavedRequest,
 };
@@ -21,6 +22,7 @@ pub struct WorkspaceReplacement {
     pub saved_requests: Vec<SavedRequest>,
     pub environments: Vec<Environment>,
     pub environment_variables: Vec<EnvironmentVariable>,
+    pub proxy_rules: Vec<ProxyRule>,
 }
 
 impl Database {
@@ -43,6 +45,7 @@ impl Database {
         transaction.execute("DELETE FROM environments", [])?;
         transaction.execute("DELETE FROM saved_collections", [])?;
         transaction.execute("DELETE FROM sessions", [])?;
+        transaction.execute("DELETE FROM proxy_rules", [])?;
 
         for imported in &replacement.sessions {
             let session = &imported.session;
@@ -136,6 +139,12 @@ impl Database {
             transaction.execute(
                 "INSERT INTO environment_variables (id, schema_version, environment_id, key, value, is_secret, secret_ref, enabled, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![&variable.id, i64::from(variable.schema_version), &variable.environment_id, &variable.key, stored_value, variable.is_secret, &variable.secret_ref, variable.enabled, variable.sort_order],
+            )?;
+        }
+        for rule in &replacement.proxy_rules {
+            transaction.execute(
+                "INSERT INTO proxy_rules (id, enabled, priority, created_at, rule_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![&rule.id, rule.enabled, rule.priority, &rule.created_at, serde_json::to_string(rule)?],
             )?;
         }
         transaction.commit()?;

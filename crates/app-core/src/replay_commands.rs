@@ -162,6 +162,8 @@ pub async fn send_replay(
         },
         error_code: None,
         error_message: None,
+        proxy_rule_ids: Vec::new(),
+        proxy_rule_changes: Vec::new(),
     };
 
     state

@@ -84,11 +84,25 @@ export function SettingsView() {
 
   async function exportBundle() {
     setBusy(true);
+    setBundleText("");
     try {
       const bundle = await invoke<PortableWorkspaceBundle>("export_workspace");
       const json = JSON.stringify(bundle, null, 2);
       setBundleText(json);
-      const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+      setMessage(`Review this bundle snapshot before downloading: ${bundle.sessions.length} sessions, ${bundle.collections.length} collections, ${bundle.environments.length} environments, and ${bundle.proxyRules.length} proxy rules.`);
+      setError(null);
+    } catch (value) {
+      setError(formatInvokeError(value));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadBundle() {
+    if (!bundleText) return;
+    setBusy(true);
+    try {
+      const url = URL.createObjectURL(new Blob([bundleText], { type: "application/json" }));
       const link = document.createElement("a");
       link.href = url;
       link.download = `mobile-api-studio-workspace-${new Date().toISOString().slice(0, 10)}.mas.json`;
@@ -99,9 +113,7 @@ export function SettingsView() {
         completed: true,
       });
       await refreshSteps();
-      setMessage(
-        `Downloaded ${bundle.sessions.length} sessions, ${bundle.collections.length} collections, and ${bundle.environments.length} environments.`,
-      );
+      setMessage("Downloaded the reviewed workspace bundle snapshot.");
       setError(null);
     } catch (value) {
       setError(formatInvokeError(value));
@@ -125,7 +137,7 @@ export function SettingsView() {
     if (
       importMode === "replace" &&
       !window.confirm(
-        "Replace current workspace data with this bundle? Existing sessions, flows, collections, and environments will be removed first.",
+        "Replace current workspace data with this bundle? Existing sessions, flows, collections, environments, and proxy rules will be removed first.",
       )
     ) {
       return;
@@ -137,7 +149,7 @@ export function SettingsView() {
       const summary = await invoke<ImportSummary>("import_workspace", { bundle, mode: importMode });
       setImportSummary(summary);
       setMessage(
-        `Imported ${summary.sessions} sessions and ${summary.flows} flows. ${summary.secretValuesOmitted} secret values require re-entry.`,
+        `Imported ${summary.sessions} sessions, ${summary.flows} flows, and ${summary.proxyRules} proxy rules. ${summary.proxyRulesDisabled} imported rules are disabled until reviewed. ${summary.secretValuesOmitted} secret values require re-entry.`,
       );
       setError(null);
     } catch (value) {
@@ -234,21 +246,22 @@ export function SettingsView() {
         <div className="panel-heading">
           <div>
             <strong>Workspace export</strong>
-            <span>Versioned local bundle with sessions, flow bodies, collections, and environments</span>
+            <span>Versioned local bundle with sessions, flow bodies, collections, environments, and proxy rules</span>
           </div>
           <button className="primary compact" onClick={() => void exportBundle()} disabled={busy}>
-            Export .mas.json
+            Preview .mas.json
           </button>
         </div>
         <div className="privacy-note">
-          <strong>Safe defaults:</strong> environment secret values and Keychain references are omitted,
-          and sensitive headers are redacted. Captured request/response bodies are preserved so sessions
-          can be restored; inspect a bundle before sharing because bodies may contain application data.
+          <strong>Review before download:</strong> environment secret values, Keychain references, sensitive rule actions,
+          Map Local files, and rule audit metadata are omitted; sensitive headers are redacted. Captured request/response bodies are included
+          and may contain application data. Imported proxy rules start disabled.
         </div>
         {bundleText ? (
           <>
-            <textarea className="bundle-textarea" value={bundleText} readOnly spellCheck={false} />
+            <textarea className="bundle-textarea" value={bundleText} readOnly spellCheck={false} aria-label="Workspace export JSON preview" />
             <div className="settings-actions">
+              <button className="primary compact" onClick={() => void downloadBundle()} disabled={busy}>Download previewed .mas.json</button>
               <button className="secondary compact" onClick={() => void copyBundle()}>Copy JSON</button>
             </div>
           </>
@@ -290,6 +303,10 @@ export function SettingsView() {
             <span>Collections <strong>{importSummary.collections}</strong></span>
             <span>Saved requests <strong>{importSummary.savedRequests}</strong></span>
             <span>Environments <strong>{importSummary.environments}</strong></span>
+            <span>Proxy rules <strong>{importSummary.proxyRules}</strong></span>
+            <span>Rules disabled <strong>{importSummary.proxyRulesDisabled}</strong></span>
+            <span>Map Local files omitted <strong>{importSummary.mapLocalFilesOmitted}</strong></span>
+            <span>Rule actions omitted <strong>{importSummary.ruleActionsOmitted}</strong></span>
             <span>Secrets to re-enter <strong>{importSummary.secretValuesOmitted}</strong></span>
           </div>
         ) : null}

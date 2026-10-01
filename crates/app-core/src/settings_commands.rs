@@ -3,6 +3,7 @@ use crate::State;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use capture_core::CaptureEngine;
 use core_model::{
+    proxy_rules::{ProxyRule, ProxyRuleAction, RulePattern, RulePatternKind},
     AppError, BodyRef, CaptureSession, Environment, EnvironmentVariable, FlowDetail, FlowSummary,
     OnboardingStep, SavedCollection, SavedRequest, SessionStatus,
 };
@@ -14,7 +15,7 @@ use std::{collections::HashSet, fs};
 use storage::{ImportedFlow, ImportedSession, WorkspaceReplacement};
 use workspace_core::{ConnectionDoctorReport, DoctorCheck, DoctorStatus};
 
-const PORTABLE_BUNDLE_VERSION: u16 = 3;
+const PORTABLE_BUNDLE_VERSION: u16 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +27,18 @@ pub struct PortableWorkspaceBundle {
     pub saved_requests: Vec<SavedRequest>,
     pub environments: Vec<Environment>,
     pub environment_variables: Vec<EnvironmentVariable>,
+    #[serde(default)]
+    pub proxy_rules: Vec<PortableProxyRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableProxyRule {
+    pub rule: ProxyRule,
+    #[serde(default)]
+    pub map_local_file_omitted: bool,
+    #[serde(default)]
+    pub action_omitted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +74,10 @@ pub struct ImportSummary {
     pub environments: usize,
     pub variables: usize,
     pub secret_values_omitted: usize,
+    pub proxy_rules: usize,
+    pub map_local_files_omitted: usize,
+    pub rule_actions_omitted: usize,
+    pub proxy_rules_disabled: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -347,6 +364,25 @@ pub fn export_workspace(state: State<'_, AppState>) -> Result<PortableWorkspaceB
         }
     }
 
+    let stored_rules = state.database.list_proxy_rules().map_err(storage_error)?;
+    let mut used_ids: HashSet<String> = stored_rules.iter().map(|rule| rule.id.clone()).collect();
+    let proxy_rules = stored_rules.into_iter().enumerate().map(|(index, mut rule)| {
+        let map_local_file_omitted = matches!(rule.action, ProxyRuleAction::MapLocal { .. });
+        let action_omitted = !matches!(rule.action, ProxyRuleAction::Allow | ProxyRuleAction::Block { .. } | ProxyRuleAction::Breakpoint { .. } | ProxyRuleAction::NoCache | ProxyRuleAction::BlockCookies);
+        if action_omitted {
+            let mut candidate = format!("omitted-rule-{index}");
+            while !used_ids.insert(candidate.clone()) { candidate.push('_'); }
+            rule.id = candidate;
+            rule.name = "Omitted rule action".into();
+            rule.matcher.method = None;
+            rule.matcher.host = RulePattern { kind: RulePatternKind::Wildcard, value: "*".into() };
+            rule.matcher.path = RulePattern { kind: RulePatternKind::Wildcard, value: "*".into() };
+            rule.action = ProxyRuleAction::Allow;
+            rule.enabled = false;
+        }
+        PortableProxyRule { rule, map_local_file_omitted, action_omitted }
+    }).collect();
+
     Ok(PortableWorkspaceBundle {
         bundle_version: PORTABLE_BUNDLE_VERSION,
         exported_at: now_epoch_millis()?,
@@ -355,6 +391,7 @@ pub fn export_workspace(state: State<'_, AppState>) -> Result<PortableWorkspaceB
         saved_requests,
         environments,
         environment_variables,
+        proxy_rules,
     })
 }
 
@@ -401,11 +438,11 @@ pub async fn import_workspace(
     } else {
         None
     };
-    if bundle.bundle_version != 2 && bundle.bundle_version != PORTABLE_BUNDLE_VERSION {
+    if !matches!(bundle.bundle_version, 2 | 3 | PORTABLE_BUNDLE_VERSION) {
         return Err(AppError::new(
             "unsupported_bundle_version",
             format!(
-                "This build supports workspace bundle versions 2 and {PORTABLE_BUNDLE_VERSION}, received {}.",
+                "This build supports workspace bundle versions 2, 3 and {PORTABLE_BUNDLE_VERSION}, received {}.",
                 bundle.bundle_version
             ),
             true,
@@ -431,6 +468,7 @@ pub async fn import_workspace(
         }
     }
     validate_bundle_bodies(&bundle)?;
+    let proxy_rules = validate_bundle_rules(&bundle, &mode, &state)?;
     let imported_at = now_epoch_millis()?;
 
     if matches!(mode, ImportMode::Replace) {
@@ -442,7 +480,7 @@ pub async fn import_workspace(
                 true,
             ));
         }
-        let replacement = prepare_replacement(&bundle, &state, &imported_at)?;
+        let replacement = prepare_replacement(&bundle, &state, &imported_at, proxy_rules)?;
         let old_secret_refs = state
             .database
             .replace_workspace(&replacement)
@@ -535,6 +573,9 @@ pub async fn import_workspace(
             .upsert_environment_variable(&variable)
             .map_err(storage_error)?;
     }
+    for rule in &proxy_rules {
+        state.database.upsert_proxy_rule(rule).map_err(storage_error)?;
+    }
 
     Ok(ImportSummary {
         sessions: bundle.sessions.len(),
@@ -544,6 +585,10 @@ pub async fn import_workspace(
         environments: bundle.environments.len(),
         variables: bundle.environment_variables.len(),
         secret_values_omitted: omitted_secrets,
+        proxy_rules: proxy_rules.len(),
+        map_local_files_omitted: bundle.proxy_rules.iter().filter(|item| item.map_local_file_omitted).count(),
+        rule_actions_omitted: bundle.proxy_rules.iter().filter(|item| item.action_omitted).count(),
+        proxy_rules_disabled: proxy_rules.len(),
     })
 }
 
@@ -551,6 +596,7 @@ fn prepare_replacement(
     bundle: &PortableWorkspaceBundle,
     state: &State<'_, AppState>,
     imported_at: &str,
+    proxy_rules: Vec<ProxyRule>,
 ) -> Result<WorkspaceReplacement, AppError> {
     let mut sessions = Vec::with_capacity(bundle.sessions.len());
     for portable_session in &bundle.sessions {
@@ -610,6 +656,7 @@ fn prepare_replacement(
         saved_requests: bundle.saved_requests.clone(),
         environments: bundle.environments.clone(),
         environment_variables,
+        proxy_rules,
     })
 }
 
@@ -630,13 +677,60 @@ fn import_summary(bundle: &PortableWorkspaceBundle) -> ImportSummary {
             .iter()
             .filter(|variable| variable.is_secret)
             .count(),
+        proxy_rules: bundle.proxy_rules.len(),
+        map_local_files_omitted: bundle.proxy_rules.iter().filter(|item| item.map_local_file_omitted).count(),
+        rule_actions_omitted: bundle.proxy_rules.iter().filter(|item| item.action_omitted).count(),
+        proxy_rules_disabled: bundle.proxy_rules.len(),
     }
+}
+
+fn validate_bundle_rules(bundle: &PortableWorkspaceBundle, mode: &ImportMode, state: &State<'_, AppState>) -> Result<Vec<ProxyRule>, AppError> {
+    if bundle.proxy_rules.len() > 1_000 || (bundle.bundle_version < 4 && !bundle.proxy_rules.is_empty()) {
+        return Err(AppError::new("bundle_proxy_rules_invalid", "Bundle contains unsupported or too many proxy rules.", true));
+    }
+    let mut ids = HashSet::new();
+    let mut rules = Vec::with_capacity(bundle.proxy_rules.len());
+    let mut storage_bytes = 0_usize;
+    for portable in &bundle.proxy_rules {
+        let mut rule = portable.rule.clone();
+        if !ids.insert(rule.id.clone()) || (portable.map_local_file_omitted && !portable.action_omitted)
+            || (portable.action_omitted && (rule.enabled || !matches!(rule.action, ProxyRuleAction::Allow)))
+            || (!portable.action_omitted && matches!(rule.action, ProxyRuleAction::MapLocal { .. })) {
+            return Err(AppError::new("bundle_proxy_rules_invalid", "Bundle contains duplicate rules or invalid omitted action metadata.", true));
+        }
+        rule.enabled = false;
+        super::proxy_rule_commands::validate_proxy_rule(&rule, state, false)?;
+        storage_bytes = storage_bytes.saturating_add(serde_json::to_vec(&rule).map_err(|error| AppError::new("bundle_proxy_rules_invalid", error.to_string(), true))?.len());
+        rules.push(rule);
+    }
+    if matches!(mode, ImportMode::Merge) {
+        let existing = state.database.list_proxy_rules().map_err(storage_error)?;
+        for rule in existing.iter().filter(|rule| !ids.contains(&rule.id)) {
+            storage_bytes = storage_bytes.saturating_add(serde_json::to_vec(rule).map_err(|error| AppError::new("bundle_proxy_rules_invalid", error.to_string(), true))?.len());
+        }
+        let total = existing.iter().filter(|rule| !ids.contains(&rule.id)).count() + rules.len();
+        if total > 1_000 {
+            return Err(AppError::new("proxy_rule_limit", "The workspace supports at most 1,000 proxy rules.", true));
+        }
+    }
+    if storage_bytes > super::proxy_rule_commands::MAX_RULE_STORAGE_BYTES {
+        return Err(AppError::new("proxy_rule_storage_limit", "Proxy rule definitions exceed the workspace limit of 16 MiB.", true));
+    }
+    Ok(rules)
 }
 
 fn validate_bundle_bodies(bundle: &PortableWorkspaceBundle) -> Result<(), AppError> {
     for session in &bundle.sessions {
         for flow in &session.flows {
             if let Some(detail) = flow.detail.as_ref() {
+                if detail.proxy_rule_ids.len() > 100 || detail.proxy_rule_changes.len() > 100
+                    || detail.proxy_rule_ids.iter().any(|id| id.len() > 120)
+                    || detail.proxy_rule_changes.iter().any(|change| {
+                        change.rule_id.len() > 120 || change.field.len() > 120
+                            || change.before.len() > 256 || change.after.len() > 256
+                    }) {
+                    return Err(AppError::new("bundle_rule_metadata_invalid", "Proxy rule flow metadata exceeds supported limits.", true));
+                }
                 if let Some(reference) = detail
                     .request
                     .as_ref()
@@ -744,6 +838,8 @@ fn decode_bundle_body(reference: &BodyRef, encoded: Option<&str>) -> Result<Vec<
 }
 
 fn redact_flow_detail(detail: &mut FlowDetail) {
+    detail.proxy_rule_ids.clear();
+    detail.proxy_rule_changes.clear();
     if let Some(request) = detail.request.as_mut() {
         for header in &mut request.headers {
             if header.sensitive || replay::is_sensitive_header(&header.name) {
@@ -780,6 +876,7 @@ fn storage_error(error: storage::StorageError) -> AppError {
 mod tests {
     use super::*;
     use capture_core::CaptureHandle;
+    use core_model::proxy_rules::{ProxyRuleMatcher, PROXY_RULE_SCHEMA_VERSION};
     use core_model::{HeaderValue, RequestDetail, ResponseDetail, SCHEMA_VERSION, Timing};
 
     #[test]
@@ -814,6 +911,8 @@ mod tests {
             timing: Timing::default(),
             error_code: None,
             error_message: None,
+            proxy_rule_ids: Vec::new(),
+            proxy_rule_changes: Vec::new(),
         };
         redact_flow_detail(&mut detail);
         let request_header = &detail.request.unwrap().headers[0];
@@ -962,6 +1061,8 @@ mod tests {
                                 timing: Timing::default(),
                                 error_code: None,
                                 error_message: None,
+                                proxy_rule_ids: Vec::new(),
+                                proxy_rule_changes: Vec::new(),
                             }),
                             request_body_base64: Some("not base64!".into()),
                             response_body_base64: None,
@@ -971,6 +1072,7 @@ mod tests {
                     saved_requests: vec![],
                     environments: vec![],
                     environment_variables: vec![],
+                    proxy_rules: vec![],
                 };
 
                 let error = import_workspace(bundle, ImportMode::Replace, State(&state))
@@ -999,6 +1101,7 @@ mod tests {
                         enabled: true,
                         sort_order: 0,
                     }],
+                    proxy_rules: vec![],
                 };
                 let error = import_workspace(orphan_bundle, ImportMode::Replace, State(&state))
                     .await
@@ -1031,6 +1134,7 @@ mod tests {
                         },
                     ],
                     environment_variables: vec![],
+                    proxy_rules: vec![],
                 };
                 assert!(
                     import_workspace(duplicate_name_bundle, ImportMode::Replace, State(&state))
@@ -1108,6 +1212,7 @@ mod tests {
                         enabled: true,
                         sort_order: 0,
                     }],
+                    proxy_rules: vec![],
                 };
                 let result = import_workspace(valid_bundle, ImportMode::Replace, State(&state))
                     .await
@@ -1138,5 +1243,66 @@ mod tests {
                 drop(state);
                 fs::remove_dir_all(data_dir).unwrap();
             });
+    }
+
+    #[test]
+    fn bundle_omits_sensitive_rule_actions_and_replaces_rules_atomically() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let data_dir = std::env::temp_dir().join(format!("mas-rule-bundle-{}-{}", std::process::id(), now_epoch_millis().unwrap()));
+            let state = crate::initialize_state(data_dir.clone(), crate::resolve_addon_path().unwrap()).unwrap();
+            let rule = ProxyRule {
+                schema_version: PROXY_RULE_SCHEMA_VERSION,
+                id: "private-id".into(), name: "private-name".into(), enabled: true, priority: 1,
+                matcher: ProxyRuleMatcher { method: None,
+                    host: RulePattern { kind: RulePatternKind::Exact, value: "private.example".into() },
+                    path: RulePattern { kind: RulePatternKind::Exact, value: "/private".into() } },
+                action: ProxyRuleAction::MapRemote { url: "https://example.test/?token=secret".into() },
+                created_at: "1".into(), updated_at: "1".into(),
+            };
+            state.database.upsert_proxy_rule(&rule).unwrap();
+            let safe = ProxyRule { id: "omitted-rule-0".into(), name: "Block".into(), priority: 2,
+                matcher: ProxyRuleMatcher { method: None,
+                    host: RulePattern { kind: RulePatternKind::Wildcard, value: "*".into() },
+                    path: RulePattern { kind: RulePatternKind::Wildcard, value: "*".into() } },
+                action: ProxyRuleAction::Block { status_code: 403 }, ..rule.clone() };
+            state.database.upsert_proxy_rule(&safe).unwrap();
+            let local = ProxyRule { id: "local-id".into(), name: "Local".into(), priority: 3,
+                action: ProxyRuleAction::MapLocal { path: "private-map-file".into() }, ..safe.clone() };
+            state.database.upsert_proxy_rule(&local).unwrap();
+            let bundle = export_workspace(State(&state)).unwrap();
+            let json = serde_json::to_string(&bundle).unwrap();
+            assert!(!json.contains("secret"));
+            assert!(!json.contains("private"));
+            assert!(bundle.proxy_rules[0].action_omitted);
+            assert!(!bundle.proxy_rules[0].rule.enabled);
+            assert_ne!(bundle.proxy_rules[0].rule.id, safe.id);
+            assert!(bundle.proxy_rules[1].rule.enabled);
+            assert!(bundle.proxy_rules[2].map_local_file_omitted);
+            assert!(!json.contains("private-map-file"));
+
+            let mut invalid = bundle.clone();
+            invalid.proxy_rules[0].rule.enabled = true;
+            assert_eq!(import_workspace(invalid, ImportMode::Replace, State(&state)).await.unwrap_err().code, "bundle_proxy_rules_invalid");
+            assert_eq!(state.database.list_proxy_rules().unwrap().len(), 3);
+
+            let summary = import_workspace(bundle, ImportMode::Replace, State(&state)).await.unwrap();
+            assert_eq!(summary.proxy_rules, 3);
+            assert_eq!(summary.rule_actions_omitted, 2);
+            assert_eq!(summary.map_local_files_omitted, 1);
+            assert_eq!(summary.proxy_rules_disabled, 3);
+            assert_eq!(state.database.list_proxy_rules().unwrap()[0].action, ProxyRuleAction::Allow);
+            assert!(state.database.list_proxy_rules().unwrap().iter().all(|rule| !rule.enabled));
+
+            let mut old_json = serde_json::to_value(export_workspace(State(&state)).unwrap()).unwrap();
+            old_json.as_object_mut().unwrap().remove("proxyRules");
+            old_json["bundleVersion"] = 3.into();
+            let old_bundle: PortableWorkspaceBundle = serde_json::from_value(old_json).unwrap();
+            assert!(old_bundle.proxy_rules.is_empty());
+            import_workspace(old_bundle, ImportMode::Replace, State(&state)).await.unwrap();
+            assert!(state.database.list_proxy_rules().unwrap().is_empty());
+
+            drop(state);
+            fs::remove_dir_all(data_dir).unwrap();
+        });
     }
 }

@@ -160,6 +160,8 @@ fn persist_captured_flow(
         timing: flow.timing,
         error_code: flow.error_code,
         error_message: flow.error_message,
+        proxy_rule_ids: flow.proxy_rule_ids,
+        proxy_rule_changes: flow.proxy_rule_changes,
     };
 
     database

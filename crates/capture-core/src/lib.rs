@@ -84,6 +84,10 @@ pub struct CapturedFlow {
     pub timing: Timing,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+    #[serde(default)]
+    pub proxy_rule_ids: Vec<String>,
+    #[serde(default)]
+    pub proxy_rule_changes: Vec<core_model::ProxyRuleChange>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -15,6 +15,27 @@ fn output<T: serde::Serialize>(value: T) -> Result<Value, AppError> {
 
 pub async fn invoke(command: &str, args: Value, state: &AppState) -> Result<Value, AppError> {
     match command {
+        "preview_proxy_rule" => {
+            let rule = input(&args, "rule")?;
+            let request = input(&args, "request")?;
+            output(crate::proxy_rule_commands::preview_proxy_rule(rule, request)?)
+        }
+        "list_proxy_rules" => output(crate::proxy_rule_commands::list_proxy_rules(State(state))?),
+        "list_proxy_rule_diagnostics" => output(crate::proxy_rule_commands::list_proxy_rule_diagnostics(State(state))?),
+        "import_proxy_map" => {
+            let name = input(&args, "name")?;
+            let data_base64 = input(&args, "dataBase64")?;
+            output(crate::proxy_rule_commands::import_proxy_map(name, data_base64, State(state))?)
+        }
+        "upsert_proxy_rule" => {
+            let rule = input(&args, "rule")?;
+            output(crate::proxy_rule_commands::upsert_proxy_rule(rule, State(state))?)
+        }
+        "delete_proxy_rule" => {
+            let id = input(&args, "id")?;
+            output(crate::proxy_rule_commands::delete_proxy_rule(id, State(state))?)
+        }
+        "disable_all_proxy_rules" => output(crate::proxy_rule_commands::disable_all_proxy_rules(State(state))?),
         "ai_settings" => output(crate::ai_commands::ai_settings(State(state))?),
         "set_ai_settings" => {
             let input = input(&args, "input")?;

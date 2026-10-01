@@ -1,5 +1,6 @@
 mod detail;
 mod import;
+mod proxy_rules;
 mod workflow;
 
 pub use import::{ImportedFlow, ImportedSession, WorkspaceReplacement};
@@ -118,7 +119,7 @@ impl Database {
             )?;
             let migrated: bool = if has_migrations {
                 connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 4)",
+                    "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 5)",
                     [],
                     |row| row.get(0),
                 )?
@@ -127,7 +128,7 @@ impl Database {
             };
             if !migrated {
                 let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-                let backup = format!("{}.pre-capture-targets-{stamp}.bak", path.display());
+                let backup = format!("{}.pre-proxy-rules-{stamp}.bak", path.display());
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::OpenOptionsExt;
@@ -163,6 +164,8 @@ impl Database {
             migration.execute_batch(MIGRATION_004)?;
             migration.commit()?;
         }
+        drop(connection);
+        proxy_rules::initialize(self)?;
         Ok(())
     }
 
@@ -558,7 +561,7 @@ mod capture_metadata_migration_tests {
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .contains("pre-capture-targets")
+                .contains("pre-proxy-rules")
         }));
 
         let mut current = old_session;

@@ -5,6 +5,7 @@ import { AiView } from "./components/AiView";
 import { CompareView } from "./components/CompareView";
 import { ConnectView } from "./components/ConnectView";
 import { MocksView } from "./components/MocksView";
+import { ProxyRulesView } from "./components/ProxyRulesView";
 import { MockUtilitiesView } from "./components/MockUtilitiesView";
 import { ReplayView } from "./components/ReplayView";
 import { SdkView } from "./components/SdkView";
@@ -90,9 +91,9 @@ function App() {
           </div>)}
         </nav>
 
-        <div className={connection?.connected ? "capture-indicator active" : "capture-indicator"} role="status">
+        <div className={connection?.connected && connection.captureRunning !== false ? "capture-indicator active" : "capture-indicator"} role="status">
           <span className="status-dot" />
-          <div><strong>{connection?.connected ? "Capture active" : "No active capture"}</strong>
+          <div><strong>{connection?.connected ? connection.captureRunning === false ? "Capture stopped" : "Capture active" : "No active capture"}</strong>
           <small>{connection?.connected ? connection.deviceId : "Connect a runtime to begin"}</small></div>
         </div>
         <div className="sidebar-metric">
@@ -136,7 +137,7 @@ function App() {
         {route === "Connect" ? <ConnectView onOpenTraffic={() => navigate("Traffic")} sharedConnection={connection} /> : null}
         {route === "Traffic" ? <TrafficView onOpenConnect={() => navigate("Connect")} /> : null}
         {route === "Replay" ? <ReplayView savedRequestId={replaySavedRequestId} /> : null}
-        {route === "Mocks" ? <div className="mocks-page-stack"><MocksView /><MockUtilitiesView /></div> : null}
+        {route === "Mocks" ? <div className="mocks-page-stack"><ProxyRulesView /><MocksView /><MockUtilitiesView /></div> : null}
         {route === "Compare" ? <CompareView /> : null}
         {route === "AI" ? <AiView /> : null}
         {route === "SDK" ? <SdkView /> : null}

@@ -1,5 +1,5 @@
 import { invoke } from "../api/invoke";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { MockFixture, MockRule } from "../mockTypes";
 import type { FlowSdkEnrichment, SdkContextSnapshot, SdkEnvelope } from "../sdkTypes";
 import type {
@@ -299,6 +299,7 @@ export function TrafficView({ onOpenConnect }: { onOpenConnect: () => void }) {
         {detail ? (
           <div className="inspector-scroll">
             <InspectorSummary detail={detail} sessionName={selectedSearchResult?.sessionName ?? null} endpointKey={selectedSearchResult?.endpoint.key ?? null} />
+            <InspectorProxyRules detail={detail} />
             {sdkError ? <section className="inspector-section" role="alert"><h3>App context</h3><p className="muted-copy">App context could not load: {sdkError}</p></section>
               : <SdkEnrichmentSection enrichment={sdkEnrichment} />}
             {collections.length > 0 ? <section className="inspector-section collection-save-panel"><h3>Save request</h3><div className="collection-save-row"><select value={collectionId} onChange={(event) => setCollectionId(event.target.value)}>{collections.map((collection) => <option key={collection.id} value={collection.id}>{collection.name}</option>)}</select><button className="primary compact" onClick={() => void saveToCollection()}>{saveState}</button></div></section> : <section className="inspector-section"><h3>Save request</h3><p className="muted-copy">Create a collection in Workspace to save this request.</p></section>}
@@ -358,6 +359,16 @@ function NearbySdkEvent({ event }: { event: SdkEnvelope }) {
 
 function InspectorSummary({ detail, sessionName, endpointKey }: { detail: FlowDetail; sessionName: string | null; endpointKey: string | null }) {
   return <section className="inspector-section"><h3>Overview</h3><dl className="detail-grid compact-detail-grid"><dt>Method</dt><dd>{detail.request?.method ?? detail.summary.method}</dd><dt>Status</dt><dd>{detail.response?.statusCode ?? detail.summary.statusCode ?? "pending"}</dd><dt>URL</dt><dd>{detail.request?.url ?? `${detail.summary.host}${detail.summary.path}`}</dd><dt>Session</dt><dd>{sessionName ?? detail.summary.sessionId ?? "unassigned"}</dd><dt>Source</dt><dd>{detail.summary.source}</dd><dt>Endpoint</dt><dd>{endpointKey ?? "—"}</dd><dt>Total</dt><dd>{formatMs(detail.timing.totalMs)}</dd></dl></section>;
+}
+
+function InspectorProxyRules({ detail }: { detail: FlowDetail }) {
+  const ids = detail.proxyRuleIds ?? [];
+  const changes = detail.proxyRuleChanges ?? [];
+  if (!ids.length && !changes.length) return null;
+  return <section className="inspector-section"><h3>Applied proxy rules</h3><dl className="detail-grid compact-detail-grid">
+    {ids.map((id, index) => <Fragment key={`${id}-${index}`}><dt>Rule {index + 1}</dt><dd>{id}</dd></Fragment>)}
+    {changes.map((change, index) => <Fragment key={`${change.ruleId}-${index}`}><dt>{change.field}</dt><dd>{change.before} → {change.after} <span className="muted-copy">({change.ruleId})</span></dd></Fragment>)}
+  </dl></section>;
 }
 
 function InspectorHeaders({ title, headers }: { title: string; headers: HeaderValue[] }) {

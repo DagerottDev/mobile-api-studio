@@ -1,3 +1,5 @@
+import type { ProxyRule } from "./proxyTypes";
+
 export type FlowSource = "proxy" | "replay" | "mock" | "sdk" | "fixture";
 export type SessionStatus = "active" | "completed" | "interrupted" | "archived";
 export type DevicePlatform = "ios" | "android";
@@ -8,9 +10,11 @@ export type CaptureTarget =
   | { schemaVersion: number; type: "ios_simulator" | "android_emulator"; deviceId: string }
   | { schemaVersion: number; type: "mac_all" }
   | { schemaVersion: number; type: "mac_process"; pid: number; name: string }
-  | { schemaVersion: number; type: "physical_ios" | "physical_android"; address: string; interface: string };
+  | { schemaVersion: number; type: "physical_ios" | "physical_android"; address: string; interface: string }
+  | { schemaVersion: number; type: "proxy_listener"; mode: ListenerMode; listenPort: number };
 
-export type CaptureMode = { schemaVersion: number; type: "regular_proxy" | "local_all" | "local_process"; pid?: number };
+export type ListenerMode = { type: "reverse_proxy" | "upstream_proxy"; url: string } | { type: "socks5" | "dns_proxy" };
+export type CaptureMode = ({ type: "regular_proxy" | "local_all" } | { type: "local_process"; pid: number } | ListenerMode) & { schemaVersion: number };
 export interface MacProcess { pid: number; name: string }
 export interface LanInterface { name: string; address: string }
 
@@ -51,6 +55,7 @@ export interface DeviceDiscoveryPayload {
 
 export interface ConnectionSnapshot {
   connected: boolean;
+  captureRunning?: boolean;
   sessionId: string | null;
   deviceId: string | null;
   strategy: string | null;
@@ -155,6 +160,8 @@ export interface FlowDetail {
   timing: Timing;
   errorCode: string | null;
   errorMessage: string | null;
+  proxyRuleIds: string[];
+  proxyRuleChanges: { ruleId: string; field: string; before: string; after: string }[];
 }
 
 export interface BodyPayload {
@@ -318,6 +325,7 @@ export interface PortableWorkspaceBundle {
   savedRequests: SavedRequest[];
   environments: Environment[];
   environmentVariables: EnvironmentVariable[];
+  proxyRules: { rule: ProxyRule; mapLocalFileOmitted: boolean; actionOmitted: boolean }[];
 }
 
 export interface ImportSummary {
@@ -328,4 +336,8 @@ export interface ImportSummary {
   environments: number;
   variables: number;
   secretValuesOmitted: number;
+  proxyRules: number;
+  proxyRulesDisabled: number;
+  mapLocalFilesOmitted: number;
+  ruleActionsOmitted: number;
 }

@@ -72,6 +72,13 @@
 
 .mock-rule-copy small { opacity: .55; }
 
+.proxy-rule-select { display: grid; gap: 3px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+.proxy-rule-select strong, .proxy-rule-select small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proxy-rule-select small { opacity: .55; }
+.proxy-preview-result { margin-left: 12px; font-size: 12px; }
+.proxy-diagnostics { margin: 12px 18px 0; padding: 10px 12px; border: 1px solid var(--border, var(--line)); border-radius: 8px; font-size: 12px; }
+.proxy-diagnostics p { margin: 6px 0 0; overflow-wrap: anywhere; }
+
 .mock-mode {
   border-radius: 999px;
   padding: 4px 7px;

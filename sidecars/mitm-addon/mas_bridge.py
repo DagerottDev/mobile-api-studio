@@ -1,24 +1,80 @@
 import asyncio
 import base64
+import ipaddress
 import json
+import mimetypes
 import os
+import stat
 import time
+import weakref
 from urllib.parse import urlsplit
 
-from mitmproxy import ctx, http
+from mitmproxy import ctx, dns, exceptions, http, tls
+from mitmproxy.proxy.mode_specs import DnsMode
 
 EVENT_PREFIX = "MAS_EVENT "
 SESSION_ID = os.environ.get("MAS_SESSION_ID")
 MAX_BODY_BYTES = int(os.environ.get("MAS_MAX_BODY_BYTES", str(2 * 1024 * 1024)))
+MAX_DECISION_BYTES = 3 * 1024 * 1024
+MAX_RULE_RESPONSE_BYTES = 8 * 1024 * 1024
 BREAKPOINT_TIMEOUT_MS = int(os.environ.get("MAS_BREAKPOINT_TIMEOUT_MS", "60000"))
 BREAKPOINT_POLL_MS = max(25, int(os.environ.get("MAS_BREAKPOINT_POLL_MS", "100")))
 SDK_CORRELATION_HEADER = "X-Mobile-API-Studio-Request-Id"
+RULE_SOCKET = os.environ.get("MAS_RULE_SOCKET")
 _RULES_MTIME_NS: int | None = None
 _RULES_DOCUMENT: dict = {"enabled": True, "rules": []}
+_TLS_POLICIES = weakref.WeakKeyDictionary()
 
 
 def _emit(payload: dict) -> None:
     print(EVENT_PREFIX + json.dumps(payload, separators=(",", ":")), flush=True)
+
+
+def running() -> None:
+    # This hook runs after mitmproxy has successfully started its configured servers.
+    _emit({"type": "engine_started"})
+
+
+async def tls_clienthello(data: tls.ClientHelloData) -> None:
+    _TLS_POLICIES.pop(data.context.client, None)
+    address = data.context.server.address
+    if not address:
+        # Outer HTTPS-to-proxy TLS has no destination policy to evaluate yet.
+        return
+    mode = data.context.client.proxy_mode.type_name
+    host = (data.client_hello.sni if mode in ("local", "transparent", "wireguard") else None) or (address[0] if address else data.client_hello.sni) or ""
+    try:
+        rules = await _proxy_rules_for("TLS", host, "/")
+        rule = next((item for item in rules if item["action"].get("type") == "inspect_https"), None)
+        if rule is None:
+            return
+        enabled = rule["action"].get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("Invalid HTTPS inspection decision")
+        if not enabled and data.context.client.transport_protocol != "tcp":
+            raise ValueError("Encrypted passthrough requires TCP TLS in this capture engine")
+        _TLS_POLICIES[data.context.client] = {"rule": rule}
+        data.ignore_connection = not enabled
+    except (OSError, ValueError, UnicodeDecodeError, asyncio.TimeoutError, asyncio.LimitOverrunError) as exc:
+        _TLS_POLICIES[data.context.client] = {"failed": True}
+        data.ignore_connection = False
+        data.establish_server_tls_first = False
+        _emit({"type": "proxy_rules_failed", "code": "proxy_rule_tls_failed", "message": str(exc)})
+        # Stop later TLS addons from changing this failed policy decision.
+        raise exceptions.AddonHalt()
+
+
+def tls_start_client(data: tls.TlsData) -> None:
+    if _TLS_POLICIES.get(data.context.client, {}).get("failed"):
+        data.ssl_conn = None
+        # ScriptLoader precedes TlsConfig. Halting leaves no TLS context, which closes the connection.
+        raise exceptions.AddonHalt()
+
+
+def quic_start_client(data) -> None:
+    if _TLS_POLICIES.get(data.context.client, {}).get("failed"):
+        data.settings = None
+        raise exceptions.AddonHalt()
 
 
 def _millis(value: float | None) -> int | None:
@@ -173,6 +229,144 @@ def _matching_rule(flow: http.HTTPFlow) -> dict | None:
     return None
 
 
+async def _proxy_rules(flow: http.HTTPFlow) -> list[dict]:
+    request = flow.request
+    return await _proxy_rules_for(request.method, request.pretty_host or request.host, urlsplit(request.url).path or "/")
+
+
+async def _proxy_rules_for(method: str, host: str, path: str) -> list[dict]:
+    if not RULE_SOCKET:
+        return []
+    payload = {"method": method, "host": host, "path": path}
+    reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(RULE_SOCKET, limit=MAX_RULE_RESPONSE_BYTES), 2)
+    try:
+        writer.write(json.dumps(payload, separators=(",", ":")).encode("utf-8") + b"\n")
+        await asyncio.wait_for(writer.drain(), 2)
+        line = await asyncio.wait_for(reader.readline(), 2)
+        if not line or len(line) > MAX_RULE_RESPONSE_BYTES + 1:
+            raise ValueError("Rule service returned no bounded response")
+        document = json.loads(line)
+        if not isinstance(document, dict) or not isinstance(document.get("rules"), list) or any(not isinstance(rule, dict) or not isinstance(rule.get("action"), dict) for rule in document["rules"]):
+            raise ValueError("Rule service returned invalid rules")
+        return document["rules"]
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+def _rule_order(rule: dict) -> tuple:
+    return (int(rule.get("priority") or 0), str(rule.get("createdAt") or ""), str(rule.get("id") or ""))
+
+
+def _record_proxy_rule(flow: http.HTTPFlow, rule: dict) -> None:
+    flow.metadata.setdefault("mas_proxy_rule_ids", []).append(str(rule["id"]))
+
+
+def _record_change(flow: http.HTTPFlow, rule: dict, field: str, before, after) -> None:
+    changes = flow.metadata.setdefault("mas_proxy_rule_changes", [])
+    if len(changes) < 32:
+        changes.append({"ruleId": str(rule["id"])[:120], "field": field[:80], "before": str(before)[:256], "after": str(after)[:256]})
+
+
+def _safe_url(url: str) -> str:
+    parsed = urlsplit(url)
+    return f"{parsed.scheme}://{parsed.hostname or ''}{parsed.path}"[:256]
+
+
+def _record_breakpoint_changes(flow: http.HTTPFlow, rule: dict, stage: str, decision: dict, before: tuple) -> None:
+    message = flow.request if stage == "request" else flow.response
+    if stage == "request":
+        if before[0] != flow.request.method:
+            _record_change(flow, rule, "method", before[0], flow.request.method)
+        if before[1] != _safe_url(flow.request.url):
+            _record_change(flow, rule, "url", before[1], _safe_url(flow.request.url))
+    elif message is not None and before[0] != message.status_code:
+        _record_change(flow, rule, "status", before[0], message.status_code)
+    if message is not None and before[2] != len(message.raw_content or b""):
+        _record_change(flow, rule, "bodyBytes", before[2], len(message.raw_content or b""))
+    for row in decision.get("headers") or []:
+        _record_change(flow, rule, f"header:{str(row.get('name') or '')[:64]}", "prior value redacted", "set")
+
+
+def _rewrite(message, action: dict, flow: http.HTTPFlow, rule: dict) -> None:
+    for mutation in action.get("headers") or []:
+        name = str(mutation["name"]).strip()
+        if not name or "\r" in name or "\n" in name:
+            raise ValueError("Invalid rewrite header name")
+        if mutation.get("remove"):
+            message.headers.pop(name, None)
+            _record_change(flow, rule, f"header:{name}", "present", "removed")
+        else:
+            value = str(mutation.get("value") or "")
+            if "\r" in value or "\n" in value:
+                raise ValueError("Invalid rewrite header value")
+            message.headers[name] = value
+            _record_change(flow, rule, f"header:{name}", "prior value redacted", "set")
+    if action.get("body") is not None:
+        body = action["body"].encode("utf-8")
+        if len(body) > MAX_BODY_BYTES:
+            raise ValueError("Rewrite body exceeds capture limit")
+        before_size = len(message.raw_content or b"")
+        message.raw_content = body
+        message.headers.pop("content-length", None)
+        message.headers.pop("content-encoding", None)
+        _record_change(flow, rule, "bodyBytes", before_size, len(body))
+
+
+def _local_body(path: str) -> bytes:
+    if not path or path in (".", "..") or os.path.basename(path) != path:
+        raise ValueError("Map Local requires a relative filename")
+    root = os.path.join(os.path.realpath(str(ctx.options.confdir)), "proxy-maps")
+    if os.path.realpath(root) != root:
+        raise ValueError("Map Local root must not be a symlink")
+    filename = os.path.join(root, path)
+    if os.path.realpath(filename) != filename:
+        raise ValueError("Map Local path must be inside proxy-maps without symlinks")
+    descriptor = os.open(filename, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BODY_BYTES:
+            raise ValueError("Map Local requires a bounded regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            body = handle.read(MAX_BODY_BYTES + 1)
+        if len(body) > MAX_BODY_BYTES:
+            raise ValueError("Map Local file exceeds capture limit")
+        return body
+    finally:
+        os.close(descriptor)
+
+
+def _remote_url(url: str) -> str:
+    if not isinstance(url, str):
+        raise ValueError("Map Remote requires a URL string")
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or len(url.encode("utf-8")) > 2048 or any(ord(char) < 32 for char in url):
+        raise ValueError("Map Remote requires a bounded HTTP(S) URL without credentials")
+    return url
+
+
+def _apply_terminal_rule(flow: http.HTTPFlow, rules: list[dict], mock: dict | None) -> bool:
+    terminal = next((item for item in rules if item.get("action", {}).get("type") in ("allow", "block", "map_local", "map_remote")), None)
+    if terminal is None or (mock is not None and _rule_order(terminal) >= _rule_order(mock)):
+        return False
+    action = terminal["action"]
+    _record_proxy_rule(flow, terminal)
+    if action["type"] == "map_local":
+        flow.response = http.Response.make(200, _local_body(action["path"]), {"content-type": mimetypes.guess_type(action["path"])[0] or "application/octet-stream"})
+        _record_change(flow, terminal, "status", "upstream", 200)
+    elif action["type"] == "map_remote":
+        before = _safe_url(flow.request.url)
+        flow.request.url = _remote_url(action["url"])
+        _record_change(flow, terminal, "url", before, _safe_url(flow.request.url))
+    elif action["type"] == "block":
+        flow.response = http.Response.make(int(action.get("statusCode") or 403), b"", {"content-type": "text/plain"})
+        _record_change(flow, terminal, "status", "upstream", flow.response.status_code)
+    flow.metadata["mas_skip_mock"] = True
+    flow.metadata.pop("mas_mock_rule_id", None)
+    flow.metadata.pop("mas_mock_rule_name", None)
+    return True
+
+
 def _rule_by_id(rule_id: str | None) -> dict | None:
     if not rule_id:
         return None
@@ -252,11 +446,20 @@ async def _wait_for_breakpoint(flow: http.HTTPFlow, rule: dict, stage: str) -> d
         while time.monotonic() < deadline:
             if os.path.isfile(decision_path):
                 try:
-                    with open(decision_path, "r", encoding="utf-8") as handle:
-                        return json.load(handle)
-                except (OSError, json.JSONDecodeError) as exc:
+                    descriptor = os.open(decision_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    with os.fdopen(descriptor, "rb") as handle:
+                        info = os.fstat(handle.fileno())
+                        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_DECISION_BYTES:
+                            raise ValueError("Breakpoint decision exceeds the supported size")
+                        payload = handle.read(MAX_DECISION_BYTES + 1)
+                    if len(payload) > MAX_DECISION_BYTES:
+                        raise ValueError("Breakpoint decision exceeds the supported size")
+                    decision = json.loads(payload)
+                    _validate_breakpoint_decision(decision)
+                    return decision
+                except (OSError, ValueError, TypeError, UnicodeDecodeError) as exc:
                     _emit({"type": "mock_rules_failed", "code": "breakpoint_decision_invalid", "message": str(exc), "rule_id": rule.get("id")})
-                    return None
+                    return {"action": "cancel"}
                 finally:
                     try:
                         os.remove(decision_path)
@@ -274,12 +477,49 @@ async def _wait_for_breakpoint(flow: http.HTTPFlow, rule: dict, stage: str) -> d
 def _decode_breakpoint_body(body: dict | None) -> bytes | None:
     if body is None:
         return None
-    return base64.b64decode(str(body.get("dataBase64") or ""))
+    if not isinstance(body, dict) or not isinstance(body.get("dataBase64"), str) or len(body["dataBase64"]) > ((MAX_BODY_BYTES + 2) // 3) * 4 or body.get("isTruncated"):
+        raise ValueError("Breakpoint body is invalid, truncated, or too large")
+    decoded = base64.b64decode(body["dataBase64"], validate=True)
+    if len(decoded) > MAX_BODY_BYTES:
+        raise ValueError("Breakpoint body exceeds capture limit")
+    content_type = body.get("contentType")
+    if content_type is not None and (not isinstance(content_type, str) or len(content_type) > 8192 or "\r" in content_type or "\n" in content_type):
+        raise ValueError("Breakpoint body has an invalid content type")
+    return decoded
+
+
+def _validate_breakpoint_decision(decision: dict) -> None:
+    if not isinstance(decision, dict) or decision.get("action") not in ("continue", "cancel"):
+        raise ValueError("Breakpoint decision has an invalid action")
+    method = decision.get("method")
+    if method is not None and (not isinstance(method, str) or not method or len(method) > 32 or any(not (char.isascii() and (char.isalnum() or char in "!#$%&'*+-.^_`|~")) for char in method)):
+        raise ValueError("Breakpoint decision has an invalid method")
+    if decision.get("url") is not None:
+        _remote_url(decision["url"])
+    _validate_breakpoint_headers(decision.get("headers"))
+    _decode_breakpoint_body(decision.get("body"))
+    status = decision.get("statusCode")
+    if status is not None and (type(status) is not int or not 100 <= status <= 599):
+        raise ValueError("Breakpoint decision has an invalid status")
+
+
+def _validate_breakpoint_headers(rows) -> None:
+    if rows is None:
+        return
+    if not isinstance(rows, list) or len(rows) > 64:
+        raise ValueError("Breakpoint decision exceeds 64 headers")
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Invalid breakpoint header")
+        name, value = row.get("name"), row.get("value")
+        if not isinstance(name, str) or not name or len(name) > 256 or any(not (char.isascii() and (char.isalnum() or char in "!#$%&'*+-.^_`|~")) for char in name) or not isinstance(value, str) or len(value.encode("utf-8")) > 8192 or "\r" in value or "\n" in value:
+            raise ValueError("Invalid breakpoint header")
 
 
 def _replace_headers(headers, rows: list[dict] | None) -> None:
     if rows is None:
         return
+    _validate_breakpoint_headers(rows)
     headers.clear()
     for row in rows:
         name = str(row.get("name") or "").strip()
@@ -304,7 +544,7 @@ def _apply_decision_body(message, decision: dict) -> None:
     message.headers.pop("content-encoding", None)
 
 
-def _apply_request_breakpoint_decision(flow: http.HTTPFlow, decision: dict | None) -> bool:
+def _apply_request_breakpoint_decision(flow: http.HTTPFlow, decision: dict | None, strict: bool = False) -> bool:
     if not decision:
         return True
     if decision.get("action") == "cancel":
@@ -320,13 +560,15 @@ def _apply_request_breakpoint_decision(flow: http.HTTPFlow, decision: dict | Non
     try:
         _apply_decision_body(flow.request, decision)
     except (ValueError, TypeError) as exc:
+        if strict:
+            raise ValueError("Invalid request breakpoint body") from exc
         _emit({"type": "mock_rules_failed", "code": "breakpoint_request_body_invalid", "message": str(exc), "rule_id": flow.metadata.get("mas_mock_rule_id")})
     # A breakpoint edit can reintroduce the local-only SDK header. Capture then strip again.
     _capture_sdk_request_id(flow)
     return True
 
 
-def _apply_response_breakpoint_decision(flow: http.HTTPFlow, decision: dict | None) -> bool:
+def _apply_response_breakpoint_decision(flow: http.HTTPFlow, decision: dict | None, strict: bool = False) -> bool:
     if not decision:
         return True
     if decision.get("action") == "cancel":
@@ -341,21 +583,111 @@ def _apply_response_breakpoint_decision(flow: http.HTTPFlow, decision: dict | No
     try:
         _apply_decision_body(flow.response, decision)
     except (ValueError, TypeError) as exc:
+        if strict:
+            raise ValueError("Invalid response breakpoint body") from exc
         _emit({"type": "mock_rules_failed", "code": "breakpoint_response_body_invalid", "message": str(exc), "rule_id": flow.metadata.get("mas_mock_rule_id")})
     return True
 
 
+async def dns_request(flow: dns.DNSFlow) -> None:
+    if not isinstance(flow.client_conn.proxy_mode, DnsMode):
+        return
+    question = flow.request.question
+    if question is None or question.class_ != dns.classes.IN or question.type not in (dns.types.A, dns.types.AAAA):
+        return
+    try:
+        if not RULE_SOCKET:
+            raise ValueError("Rule service is unavailable")
+        rules = await _proxy_rules_for("DNS", question.name, "/")
+        rule = next((item for item in rules if item["action"].get("type") == "dns_override"), None)
+        if rule is None:
+            return
+        address = ipaddress.ip_address(rule["action"]["address"])
+        if question.type == dns.types.A and isinstance(address, ipaddress.IPv4Address):
+            answers = [dns.ResourceRecord.A(question.name, address)]
+        elif question.type == dns.types.AAAA and isinstance(address, ipaddress.IPv6Address):
+            answers = [dns.ResourceRecord.AAAA(question.name, address)]
+        else:
+            answers = []
+        flow.response = flow.request.succeed(answers)
+        _record_proxy_rule(flow, rule)
+    except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError, asyncio.TimeoutError, asyncio.LimitOverrunError) as exc:
+        _emit({"type": "proxy_rules_failed", "code": "proxy_rule_dns_override_failed", "message": str(exc)})
+        flow.response = flow.request.fail(dns.response_codes.SERVFAIL)
+
+
 async def request(flow: http.HTTPFlow) -> None:
     _capture_sdk_request_id(flow)
-    rule = _matching_rule(flow)
+    tls_rule = _TLS_POLICIES.get(flow.client_conn, {}).get("rule")
+    if tls_rule:
+        _record_proxy_rule(flow, tls_rule)
+        _record_change(flow, tls_rule, "tlsInspection", "connection policy", "inspect")
+    try:
+        proxy_rules = await _proxy_rules(flow)
+    except (OSError, ValueError, UnicodeDecodeError, asyncio.TimeoutError, asyncio.LimitOverrunError) as exc:
+        _emit({"type": "proxy_rules_failed", "code": "proxy_rules_unavailable", "message": str(exc)})
+        flow.kill()
+        return
+    original_identity = (flow.request.method, flow.request.url, flow.request.pretty_host)
+    try:
+        supported = {"allow", "block", "map_local", "map_remote", "rewrite_request", "rewrite_response", "breakpoint", "no_cache", "block_cookies"}
+        for item in proxy_rules:
+            if item["action"].get("type") not in supported:
+                raise ValueError(f"Rule action {item['action'].get('type')} is not yet supported")
+        for item in proxy_rules:
+            action = item.get("action") or {}
+            kind = action.get("type")
+            if kind == "rewrite_request":
+                _rewrite(flow.request, action, flow, item)
+                _record_proxy_rule(flow, item)
+            elif kind == "no_cache":
+                flow.request.headers["cache-control"] = "no-cache"
+                _record_change(flow, item, "header:cache-control", "prior value redacted", "set")
+                _record_proxy_rule(flow, item)
+            elif kind == "block_cookies":
+                flow.request.headers.pop("cookie", None)
+                _record_change(flow, item, "header:cookie", "present", "removed")
+                _record_proxy_rule(flow, item)
+            elif kind == "breakpoint" and action.get("stage") == "request":
+                _record_proxy_rule(flow, item)
+                decision = await _wait_for_breakpoint(flow, item, "request")
+                if not isinstance(decision, dict):
+                    raise ValueError("Request breakpoint ended without a decision")
+                before = (flow.request.method, _safe_url(flow.request.url), len(flow.request.raw_content or b""))
+                if not _apply_request_breakpoint_decision(flow, decision, strict=True):
+                    return
+                _record_breakpoint_changes(flow, item, "request", decision, before)
+        _capture_sdk_request_id(flow)
+        if (flow.request.method, flow.request.url, flow.request.pretty_host) != original_identity:
+            # Re-match the edited request once; request mutations must not run twice.
+            proxy_rules = await _proxy_rules(flow)
+        flow.metadata["mas_response_proxy_rules"] = [item for item in proxy_rules if item.get("action", {}).get("type") in ("rewrite_response", "breakpoint", "no_cache", "block_cookies")]
+        rule = _matching_rule(flow)
+        if _apply_terminal_rule(flow, proxy_rules, rule):
+            return
+    except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError, asyncio.TimeoutError, asyncio.LimitOverrunError) as exc:
+        _emit({"type": "proxy_rules_failed", "code": "proxy_rule_action_failed", "message": str(exc)})
+        flow.kill()
+        return
     if rule is None:
         return
     _mark_mock(flow, rule)
 
     if rule.get("requestBreakpoint", False):
+        before_identity = (flow.request.method, flow.request.url, flow.request.pretty_host)
         decision = await _wait_for_breakpoint(flow, rule, "request")
         if not _apply_request_breakpoint_decision(flow, decision):
             return
+        if (flow.request.method, flow.request.url, flow.request.pretty_host) != before_identity:
+            try:
+                rematched = await _proxy_rules(flow)
+                flow.metadata["mas_response_proxy_rules"] = [item for item in rematched if item.get("action", {}).get("type") in ("rewrite_response", "breakpoint", "no_cache", "block_cookies")]
+                if _apply_terminal_rule(flow, rematched, rule):
+                    return
+            except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError, asyncio.TimeoutError, asyncio.LimitOverrunError) as exc:
+                _emit({"type": "proxy_rules_failed", "code": "proxy_rule_rematch_failed", "message": str(exc)})
+                flow.kill()
+                return
 
     failure_mode = rule.get("failureMode", "none")
     if failure_mode == "drop":
@@ -442,7 +774,7 @@ async def response(flow: http.HTTPFlow) -> None:
     if response is None:
         return
 
-    rule = _rule_by_id(flow.metadata.get("mas_mock_rule_id")) or _matching_rule(flow)
+    rule = None if flow.metadata.get("mas_skip_mock") else (_rule_by_id(flow.metadata.get("mas_mock_rule_id")) or _matching_rule(flow))
     if rule is not None:
         _mark_mock(flow, rule)
         latency_ms = int(rule.get("latencyMs") or 0)
@@ -467,6 +799,37 @@ async def response(flow: http.HTTPFlow) -> None:
             response = flow.response
             if response is None:
                 return
+
+    try:
+        for item in flow.metadata.get("mas_response_proxy_rules", []):
+            action = item["action"]
+            if action["type"] == "rewrite_response":
+                _rewrite(response, action, flow, item)
+                _record_proxy_rule(flow, item)
+            elif action["type"] == "no_cache":
+                response.headers["cache-control"] = "no-store"
+                response.headers.pop("expires", None)
+                _record_change(flow, item, "header:cache-control", "prior value redacted", "set")
+                _record_change(flow, item, "header:expires", "present", "removed")
+            elif action["type"] == "block_cookies":
+                response.headers.pop("set-cookie", None)
+                _record_change(flow, item, "header:set-cookie", "present", "removed")
+            elif action.get("stage") == "response":
+                _record_proxy_rule(flow, item)
+                decision = await _wait_for_breakpoint(flow, item, "response")
+                if not isinstance(decision, dict):
+                    raise ValueError("Response breakpoint ended without a decision")
+                before = (response.status_code, None, len(response.raw_content or b""))
+                if not _apply_response_breakpoint_decision(flow, decision, strict=True):
+                    return
+                _record_breakpoint_changes(flow, item, "response", decision, before)
+                response = flow.response
+                if response is None:
+                    return
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        _emit({"type": "proxy_rules_failed", "code": "proxy_rule_action_failed", "message": str(exc)})
+        flow.kill()
+        return
 
     parsed = urlsplit(request.url)
     response_size = len(response.raw_content) if response.raw_content is not None else None
@@ -509,6 +872,8 @@ async def response(flow: http.HTTPFlow) -> None:
         "timing": timing_payload,
         "mock_rule_id": flow.metadata.get("mas_mock_rule_id"),
         "mock_rule_name": flow.metadata.get("mas_mock_rule_name"),
+        "proxy_rule_ids": flow.metadata.get("mas_proxy_rule_ids", []),
+        "proxy_rule_changes": flow.metadata.get("mas_proxy_rule_changes", []),
     })
 
 
@@ -521,4 +886,5 @@ def error(flow: http.HTTPFlow) -> None:
         "message": error_message,
         "mock_rule_id": flow.metadata.get("mas_mock_rule_id"),
         "mock_rule_name": flow.metadata.get("mas_mock_rule_name"),
+        "proxy_rule_ids": flow.metadata.get("mas_proxy_rule_ids", []),
     })

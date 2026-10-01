@@ -93,6 +93,7 @@ dependencies = [
  "serde_json",
  "storage",
  "tokio",
+ "url",
  "workspace-core",
 ]
 
@@ -596,6 +597,7 @@ dependencies = [
 name = "core-model"
 version = "0.0.1"
 dependencies = [
+ "regex",
  "serde",
 ]
 

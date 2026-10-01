@@ -5,6 +5,9 @@ mod compare_commands;
 mod fixture_commands;
 mod inspect;
 mod mock_commands;
+mod proxy_rule_commands;
+#[cfg(unix)]
+mod rule_server;
 mod replay_commands;
 mod sdk_commands;
 mod settings_commands;
@@ -25,6 +28,7 @@ use sdk_protocol::SDK_INGESTION_PORT;
 use sdk_storage::SdkDatabase;
 use sdk_transport::SdkIngestionServer;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::ops::Deref;
 use std::{
     fs,
@@ -32,7 +36,7 @@ use std::{
     net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
     process::Command,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 use storage::{BodyStore, Database};
@@ -43,6 +47,7 @@ use tokio::{
     task::{JoinHandle, JoinSet},
     time::{Duration, sleep},
 };
+use url::Url;
 
 const DEFAULT_CAPTURE_PORT: u16 = 8181;
 const DEVICE_CAPTURE_PORT: u16 = 8183;
@@ -68,6 +73,11 @@ struct AppState {
     active_connection: Mutex<Option<ActiveConnection>>,
     connection_operation: Mutex<()>,
     rollback_path: PathBuf,
+    proxy_rule_diagnostics: Arc<StdMutex<VecDeque<ProxyRuleDiagnostic>>>,
+    #[cfg(unix)]
+    rule_socket_path: PathBuf,
+    #[cfg(unix)]
+    rule_server_task: StdMutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +96,12 @@ struct LanGuard {
     host: String,
     port: u16,
     task: Arc<Mutex<Option<JoinHandle<()>>>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProxyRuleDiagnostic {
+    code: String,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -113,6 +129,7 @@ struct DeviceDiscoveryPayload {
 #[serde(rename_all = "camelCase")]
 struct ConnectionSnapshot {
     connected: bool,
+    capture_running: bool,
     session_id: Option<String>,
     device_id: Option<String>,
     strategy: Option<String>,
@@ -339,10 +356,14 @@ fn list_sessions(state: State<'_, AppState>) -> Result<Vec<CaptureSession>, AppE
 
 async fn current_connection(state: State<'_, AppState>) -> Result<ConnectionSnapshot, AppError> {
     let active = state.active_connection.lock().await;
-    Ok(active
-        .as_ref()
-        .map(connection_snapshot)
-        .unwrap_or_else(disconnected_snapshot))
+    match active.as_ref() {
+        Some(active) => {
+            let mut snapshot = connection_snapshot(active);
+            snapshot.capture_running = state.capture_engine.is_running(&active.handle).await;
+            Ok(snapshot)
+        }
+        None => Ok(disconnected_snapshot()),
+    }
 }
 
 async fn connect_capture_target(
@@ -396,6 +417,11 @@ async fn connect_capture_target(
         ));
     }
 
+    let listen_port = match &target.kind {
+        CaptureTargetKind::ProxyListener { listen_port, .. } if (1024..=65535).contains(listen_port) => *listen_port,
+        CaptureTargetKind::ProxyListener { .. } => return Err(AppError::new("proxy_listener_port_invalid", "Choose a listener port from 1024 to 65535.", true)),
+        _ => DEFAULT_CAPTURE_PORT,
+    };
     let (mode, strategy, paired_ip, interface_ip) = match &target.kind {
         CaptureTargetKind::MacAll => (CaptureModeKind::LocalAll, "mac_local_all", None, None),
         CaptureTargetKind::MacProcess { pid, name } => {
@@ -465,6 +491,10 @@ async fn connect_capture_target(
                 Some(interface_ip),
             )
         }
+        CaptureTargetKind::ProxyListener { mode, .. } => {
+            validate_proxy_listener_mode(mode)?;
+            (mode.clone(), "manual_proxy_listener", None, None)
+        }
         _ => unreachable!(),
     };
     let timestamp = now_epoch_millis()?;
@@ -478,14 +508,14 @@ async fn connect_capture_target(
         .start(CaptureConfig {
             session_id: session_id.clone(),
             listen_host: "127.0.0.1".into(),
-            listen_port: DEFAULT_CAPTURE_PORT,
+            listen_port,
             mode: mode.clone(),
         })
         .await
         .map_err(capture_error_to_app_error)?;
 
     let connection_result: Result<ConnectDeviceResult, AppError> = async {
-        let certificate = wait_for_certificate(&state.capture_engine.certificate_path()).await?;
+        let certificate = if matches!(&mode.kind, CaptureModeKind::DnsProxy) { None } else { Some(wait_for_certificate(&state.capture_engine.certificate_path()).await?) };
         let (sdk_guard, pairing_token) = match (interface_ip, paired_ip) {
             (Some(interface_ip), Some(paired_ip)) => {
                 let token = new_pairing_token()?;
@@ -544,11 +574,19 @@ async fn connect_capture_target(
                 recoverable: true,
                 suggested_action: Some(format!("Install the capture CA from mitm.it while using this proxy, then enable full trust on iOS or development CA trust in the Android app. Configure SDK telemetry separately at http://{}:{DEVICE_SDK_PORT} with the session pairing token. Disable the device proxy when done; Mobile API Studio did not change its settings.", active.lan_guard.as_ref().unwrap().host)),
             });
+        } else if matches!(&target.kind, CaptureTargetKind::ProxyListener { .. }) {
+            diagnostics.push(ConnectionDiagnostic {
+                code: "manual_proxy_listener".into(),
+                title: "Manual listener is active".into(),
+                message: format!("The selected listener mode is configured on 127.0.0.1:{listen_port}. Configure only the development client you control to use it."),
+                recoverable: true,
+                suggested_action: Some("Disconnect this session to stop the listener. DNS mode requires the client to send DNS queries to this port; SOCKS5 requires a SOCKS5 client setting.".into()),
+            });
         } else {
             diagnostics.push(ConnectionDiagnostic {
                 code: "mac_local_capture_trust".into(),
                 title: "Trust the development CA for HTTPS".into(),
-                message: format!("Local capture is active. For HTTPS inspection, trust the certificate at {} for this development Mac.", certificate.display()),
+                message: format!("Local capture is active. For HTTPS inspection, trust the certificate at {} for this development Mac.", certificate.as_ref().expect("non-DNS capture has a certificate").display()),
                 recoverable: true,
                 suggested_action: Some("macOS may prompt for local capture permission. Certificate-pinned apps need their own debug configuration.".into()),
             });
@@ -565,6 +603,21 @@ async fn connect_capture_target(
             .map_err(capture_error_to_app_error)?;
     }
     connection_result
+}
+
+fn validate_proxy_listener_mode(mode: &CaptureModeKind) -> Result<(), AppError> {
+    match mode {
+        CaptureModeKind::ReverseProxy { url } | CaptureModeKind::UpstreamProxy { url } => {
+            let parsed = Url::parse(url).map_err(|error| AppError::new("proxy_listener_url_invalid", error.to_string(), true))?;
+            if url.len() > 2048 || url.chars().any(char::is_control) || !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none()
+                || !parsed.username().is_empty() || parsed.password().is_some() || parsed.path() != "/" || parsed.query().is_some() || parsed.fragment().is_some() {
+                return Err(AppError::new("proxy_listener_url_invalid", "Use a credential-free HTTP(S) host URL without path, query, or fragment.", true));
+            }
+            Ok(())
+        }
+        CaptureModeKind::Socks5 | CaptureModeKind::DnsProxy => Ok(()),
+        _ => Err(AppError::new("proxy_listener_mode_invalid", "Choose reverse, upstream, SOCKS5, or DNS listener mode.", true)),
+    }
 }
 
 async fn connect_device(
@@ -879,6 +932,7 @@ async fn recover_pending_rollback(
 fn connection_snapshot(active: &ActiveConnection) -> ConnectionSnapshot {
     ConnectionSnapshot {
         connected: true,
+        capture_running: true,
         session_id: Some(active.handle.session_id.clone()),
         device_id: active.device_id.clone(),
         strategy: Some(active.strategy.clone()),
@@ -889,6 +943,7 @@ fn connection_snapshot(active: &ActiveConnection) -> ConnectionSnapshot {
             .or_else(|| match &active.target.kind {
                 CaptureTargetKind::AndroidEmulator { .. } => Some(ANDROID_HOST_ALIAS.into()),
                 CaptureTargetKind::IosSimulator { .. } => Some("127.0.0.1".into()),
+                CaptureTargetKind::ProxyListener { .. } => Some("127.0.0.1".into()),
                 _ => None,
             }),
         proxy_port: match active.target.kind {
@@ -898,6 +953,7 @@ fn connection_snapshot(active: &ActiveConnection) -> ConnectionSnapshot {
             CaptureTargetKind::IosSimulator { .. } | CaptureTargetKind::AndroidEmulator { .. } => {
                 Some(active.handle.listen_port)
             }
+            CaptureTargetKind::ProxyListener { .. } => Some(active.handle.listen_port),
             _ => None,
         },
         capture_target: Some(active.target.clone()),
@@ -907,6 +963,7 @@ fn connection_snapshot(active: &ActiveConnection) -> ConnectionSnapshot {
 fn disconnected_snapshot() -> ConnectionSnapshot {
     ConnectionSnapshot {
         connected: false,
+        capture_running: false,
         session_id: None,
         device_id: None,
         strategy: None,
@@ -983,12 +1040,21 @@ fn clear_rollback_journal(path: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn spawn_capture_ingestion(database: Database, body_store: BodyStore, engine: Arc<MitmDumpEngine>) {
+fn spawn_capture_ingestion(database: Database, body_store: BodyStore, engine: Arc<MitmDumpEngine>, diagnostics: Arc<StdMutex<VecDeque<ProxyRuleDiagnostic>>>) {
     let mut receiver = engine.subscribe();
     tokio::spawn(async move {
         loop {
             match receiver.recv().await {
                 Ok(event) => {
+                    if let capture_core::CaptureEvent::EngineFailed { code, .. } = &event {
+                        if code.starts_with("proxy_rule") {
+                            let safe_code = code.chars().filter(|character| character.is_ascii_alphanumeric() || *character == '_').take(80).collect::<String>();
+                            if let Ok(mut queue) = diagnostics.lock() {
+                                queue.push_back(ProxyRuleDiagnostic { code: safe_code, message: "Proxy rule execution failed; the affected flow was stopped.".into() });
+                                if queue.len() > 20 { queue.pop_front(); }
+                            }
+                        }
+                    }
                     let _ = inspect::ingest_capture_event(&database, &body_store, event);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -1007,10 +1073,13 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
     let body_store =
         BodyStore::new(app_data_dir.join("bodies")).map_err(|error| error.to_string())?;
     let capture_executable = sidecar_commands::configured_capture_executable(&database)?;
-    let capture_engine = Arc::new(
-        MitmDumpEngine::new(addon_path, app_data_dir.join("mitmproxy"))
-            .with_executable(capture_executable),
-    );
+    #[cfg(unix)]
+    let rule_socket_path = rule_server::socket_path()?;
+    let mut capture_engine = MitmDumpEngine::new(addon_path, app_data_dir.join("mitmproxy"))
+        .with_executable(capture_executable);
+    #[cfg(unix)]
+    { capture_engine = capture_engine.with_rule_socket(&rule_socket_path); }
+    let capture_engine = Arc::new(capture_engine);
     Ok(AppState {
         database,
         sdk_database,
@@ -1020,6 +1089,11 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
         active_connection: Mutex::new(None),
         connection_operation: Mutex::new(()),
         rollback_path: app_data_dir.join("connection-rollback.json"),
+        proxy_rule_diagnostics: Arc::new(StdMutex::new(VecDeque::new())),
+        #[cfg(unix)]
+        rule_socket_path,
+        #[cfg(unix)]
+        rule_server_task: StdMutex::new(None),
     })
 }
 
@@ -1078,10 +1152,16 @@ pub struct CoreService {
 impl CoreService {
     pub fn start(app_data_dir: PathBuf) -> Result<Self, String> {
         let state = initialize_state(app_data_dir, resolve_addon_path()?)?;
+        #[cfg(unix)]
+        {
+            let task = rule_server::start(state.database.clone(), &state.rule_socket_path)?;
+            *state.rule_server_task.lock().map_err(|error| error.to_string())? = Some(task);
+        }
         spawn_capture_ingestion(
             state.database.clone(),
             state.body_store.clone(),
             state.capture_engine.clone(),
+            state.proxy_rule_diagnostics.clone(),
         );
         let sdk_server = Arc::new(SdkIngestionServer::localhost(SDK_INGESTION_PORT));
         sdk_commands::spawn_sdk_ingestion(state.sdk_database.clone(), sdk_server, None);
@@ -1099,7 +1179,16 @@ impl CoreService {
     }
 
     pub async fn shutdown(&self) -> Result<(), AppError> {
-        disconnect_device(State(&self.state)).await.map(|_| ())
+        let result = disconnect_device(State(&self.state)).await.map(|_| ());
+        #[cfg(unix)]
+        {
+            if let Ok(mut guard) = self.state.rule_server_task.lock() {
+                if let Some(task) = guard.take() { task.abort(); }
+            }
+            let _ = fs::remove_file(&self.state.rule_socket_path);
+            if let Some(directory) = self.state.rule_socket_path.parent() { let _ = fs::remove_dir(directory); }
+        }
+        result
     }
 }
 

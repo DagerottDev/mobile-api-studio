@@ -1,4 +1,5 @@
 use super::AppState;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use core_model::AppError;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -6,7 +7,10 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tauri::State;
+use tauri::{State, Url};
+
+const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+const MAX_DECISION_BYTES: usize = 3 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,25 +123,8 @@ pub fn resolve_breakpoint(
     input: BreakpointDecisionInput,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
-    if input.id.trim().is_empty() {
-        return Err(AppError::new(
-            "breakpoint_id_required",
-            "Breakpoint id is required.",
-            true,
-        ));
-    }
-    if let Some(status) = input.status_code {
-        if !(100..=599).contains(&status) {
-            return Err(AppError::new(
-                "breakpoint_status_invalid",
-                "Breakpoint response status must be between 100 and 599.",
-                true,
-            ));
-        }
-    }
+    validate_decision(&input)?;
 
-    let decision_dir = decision_directory(&state);
-    fs::create_dir_all(&decision_dir).map_err(io_error)?;
     let document = BreakpointDecisionDocument {
         schema_version: 1,
         id: input.id.clone(),
@@ -151,11 +138,120 @@ pub fn resolve_breakpoint(
     };
     let bytes = serde_json::to_vec_pretty(&document)
         .map_err(|error| AppError::new("breakpoint_serialize_failed", error.to_string(), true))?;
-    atomic_write(&decision_dir.join(format!("{}.json", safe_id(&input.id))), &bytes)?;
+    if bytes.len() > MAX_DECISION_BYTES {
+        return Err(AppError::new(
+            "breakpoint_decision_too_large",
+            "Breakpoint decision exceeds 3 MiB.",
+            true,
+        ));
+    }
+    let decision_dir = decision_directory(&state);
+    fs::create_dir_all(&decision_dir).map_err(io_error)?;
+    atomic_write(
+        &decision_dir.join(format!("{}.json", safe_id(&input.id))),
+        &bytes,
+    )?;
 
     let pending_path = pending_directory(&state).join(format!("{}.json", safe_id(&input.id)));
     if pending_path.exists() {
         let _ = fs::remove_file(pending_path);
+    }
+    Ok(())
+}
+
+fn valid_token(value: &str, limit: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= limit
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
+}
+
+fn validate_decision(input: &BreakpointDecisionInput) -> Result<(), AppError> {
+    if input.id.trim().is_empty() {
+        return Err(AppError::new(
+            "breakpoint_id_required",
+            "Breakpoint id is required.",
+            true,
+        ));
+    }
+    if input.id.len() > 160 || safe_id(&input.id) != input.id {
+        return Err(AppError::new(
+            "breakpoint_id_invalid",
+            "Breakpoint id is invalid.",
+            true,
+        ));
+    }
+    if let Some(status) = input.status_code {
+        if !(100..=599).contains(&status) {
+            return Err(AppError::new(
+                "breakpoint_status_invalid",
+                "Breakpoint response status must be between 100 and 599.",
+                true,
+            ));
+        }
+    }
+    if input
+        .method
+        .as_deref()
+        .is_some_and(|method| !valid_token(method, 32))
+    {
+        return Err(AppError::new(
+            "breakpoint_method_invalid",
+            "Breakpoint method must be an HTTP token of at most 32 bytes.",
+            true,
+        ));
+    }
+    if let Some(value) = &input.url {
+        let url = Url::parse(value).map_err(|_| {
+            AppError::new("breakpoint_url_invalid", "Breakpoint URL is invalid.", true)
+        })?;
+        if value.len() > 2048
+            || value.chars().any(char::is_control)
+            || !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(AppError::new(
+                "breakpoint_url_invalid",
+                "Breakpoint URL must be a credential-free HTTP(S) URL of at most 2048 bytes.",
+                true,
+            ));
+        }
+    }
+    if let Some(headers) = &input.headers {
+        if headers.len() > 64
+            || headers.iter().any(|header| {
+                !valid_token(&header.name, 256)
+                    || header.value.len() > 8192
+                    || header.value.chars().any(char::is_control)
+            })
+        {
+            return Err(AppError::new(
+                "breakpoint_headers_invalid",
+                "Breakpoint headers exceed supported limits or contain invalid characters.",
+                true,
+            ));
+        }
+    }
+    if let Some(body) = &input.body {
+        if body.data_base64.len() > (MAX_BODY_BYTES + 2) / 3 * 4
+            || body
+                .content_type
+                .as_deref()
+                .is_some_and(|value| value.len() > 256 || value.chars().any(char::is_control))
+            || BASE64
+                .decode(&body.data_base64)
+                .map_or(true, |bytes| bytes.len() > MAX_BODY_BYTES)
+        {
+            return Err(AppError::new(
+                "breakpoint_body_invalid",
+                "Breakpoint body must be valid base64 of at most 2 MiB.",
+                true,
+            ));
+        }
     }
     Ok(())
 }
@@ -206,11 +302,19 @@ pub fn clear_stale_breakpoints(state: State<'_, AppState>) -> Result<usize, AppE
 }
 
 fn pending_directory(state: &State<'_, AppState>) -> PathBuf {
-    state.capture_engine.conf_dir().join("breakpoints").join("pending")
+    state
+        .capture_engine
+        .conf_dir()
+        .join("breakpoints")
+        .join("pending")
 }
 
 fn decision_directory(state: &State<'_, AppState>) -> PathBuf {
-    state.capture_engine.conf_dir().join("breakpoints").join("decisions")
+    state
+        .capture_engine
+        .conf_dir()
+        .join("breakpoints")
+        .join("decisions")
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AppError> {

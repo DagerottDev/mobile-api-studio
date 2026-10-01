@@ -9,6 +9,7 @@ import type {
   Device,
   DeviceDiscoveryPayload,
   LanInterface,
+  ListenerMode,
   MacProcess,
   RollbackJournal,
 } from "../types";
@@ -37,6 +38,9 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
   const [selectedInterface, setSelectedInterface] = useState("");
   const [pairedAddress, setPairedAddress] = useState("");
   const [physicalPlatform, setPhysicalPlatform] = useState<"ios" | "android">("ios");
+  const [listenerMode, setListenerMode] = useState<ListenerMode["type"]>("reverse_proxy");
+  const [listenerUrl, setListenerUrl] = useState("");
+  const [listenerPort, setListenerPort] = useState(8185);
   const [loading, setLoading] = useState(true);
   const [acting, setActing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,7 +181,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
       <section className="readiness-strip" aria-label="Capture readiness">
         <div><span className="eyebrow">01 / CHECK</span><strong>Prerequisites</strong><small>{doctor ? `${doctor.checks.filter((check) => check.status === "pass").length} of ${doctor.checks.length} ready` : "Checking local tools"}</small></div>
         <div><span className="eyebrow">02 / CHOOSE</span><strong>Runtime</strong><small>{loading ? "Scanning…" : `${payload.devices.length} discovered`}</small></div>
-        <div><span className="eyebrow">03 / CAPTURE</span><strong>Connection</strong><small>{connection.connected ? "Capturing traffic" : "Waiting for a device"}</small></div>
+        <div><span className="eyebrow">03 / CAPTURE</span><strong>Connection</strong><small>{connection.connected ? connection.captureRunning === false ? "Capture stopped" : "Capturing traffic" : "Waiting for a device"}</small></div>
         <button className="secondary" onClick={onOpenTraffic} disabled={!connection.connected}>Open Traffic →</button>
       </section>
       {doctor && doctor.checks.some((check) => check.status !== "pass") ? <section className="panel readiness-checks" aria-label="Prerequisites and actions">
@@ -188,6 +192,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
         </article>)}</div>
       </section> : null}
       {error ? <div className="error-banner" role="alert">{error}</div> : null}
+      {connection.connected && connection.captureRunning === false ? <div className="error-banner" role="alert">Capture engine stopped unexpectedly. Disconnect to restore the capture settings, then reconnect.</div> : null}
       <section className="connect-grid" aria-label="Additional capture targets">
         <div className="panel">
           <div className="panel-heading"><div><strong>Mac capture</strong><span>All traffic or one running process</span></div></div>
@@ -226,6 +231,21 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
               {acting ? "Starting…" : "Enable paired LAN proxy"}
             </button>
           </div>
+        </div>
+      </section>
+      <section className="panel" aria-label="Manual proxy listener">
+        <div className="panel-heading"><div><strong>Manual listener</strong><span>Reverse, upstream, SOCKS5, or DNS on this Mac</span></div></div>
+        <div className="selected-device-detail">
+          <div className="mock-grid three-column">
+            <label className="field-label">Mode<select className="text-input" value={listenerMode} disabled={acting || connection.connected} onChange={(event) => { const mode = event.target.value as ListenerMode["type"]; setListenerMode(mode); setListenerPort(mode === "dns_proxy" ? 8186 : 8185); }}><option value="reverse_proxy">Reverse proxy</option><option value="upstream_proxy">Upstream proxy</option><option value="socks5">SOCKS5 listener</option><option value="dns_proxy">DNS listener</option></select></label>
+            <label className="field-label">Loopback port<input className="text-input" type="number" min="1024" max="65535" step="1" value={listenerPort} disabled={acting || connection.connected} onChange={(event) => setListenerPort(Number(event.target.value))} /></label>
+            {listenerMode === "reverse_proxy" || listenerMode === "upstream_proxy" ? <label className="field-label">{listenerMode === "reverse_proxy" ? "Target URL" : "Upstream proxy URL"}<input className="text-input" type="url" value={listenerUrl} placeholder="https://example.com" disabled={acting || connection.connected} onChange={(event) => setListenerUrl(event.target.value)} /></label> : null}
+          </div>
+          <p>Configure your development client to use 127.0.0.1:{listenerPort}. DNS overrides apply only to queries sent to the DNS listener; SOCKS5 needs a SOCKS5 client setting.</p>
+          <button className="primary" disabled={acting || connection.connected || Boolean(pendingRollback) || !Number.isInteger(listenerPort) || listenerPort < 1024 || listenerPort > 65535 || ((listenerMode === "reverse_proxy" || listenerMode === "upstream_proxy") && !listenerUrl.trim())} onClick={() => {
+            const mode: ListenerMode = listenerMode === "reverse_proxy" || listenerMode === "upstream_proxy" ? { type: listenerMode, url: listenerUrl.trim() } : { type: listenerMode };
+            void connectTarget({ schemaVersion: 1, type: "proxy_listener", mode, listenPort: listenerPort });
+          }}>{acting ? "Starting…" : "Start listener"}</button>
         </div>
       </section>
     <section className="connect-grid">
@@ -291,9 +311,9 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
 
           {connection.connected && connection.captureTarget && !["ios_simulator", "android_emulator"].includes(connection.captureTarget.type) ? (
             <div className="selected-device-detail">
-              <h2>{connection.captureTarget.type === "mac_all" ? "This Mac" : connection.captureTarget.type === "mac_process" ? connection.captureTarget.name : "Paired physical device"}</h2>
+              <h2>{connection.captureTarget.type === "mac_all" ? "This Mac" : connection.captureTarget.type === "mac_process" ? connection.captureTarget.name : connection.captureTarget.type === "proxy_listener" ? `${connection.captureTarget.mode.type.replaceAll("_", " ")} listener` : "Paired physical device"}</h2>
               <p>{connection.strategy}</p>
-              {connection.proxyHost ? <div className="capability-row"><span>Device proxy</span><strong>{connection.proxyHost}:{connection.proxyPort}</strong></div> : null}
+              {connection.proxyHost ? <div className="capability-row"><span>Listener</span><strong>{connection.proxyHost}:{connection.proxyPort}</strong></div> : null}
               {pairingToken ? <div className="capability-row"><span>SDK pairing token</span><code className="pairing-token">{pairingToken}</code></div> : null}
               <div className="capability-row"><span>Session</span><strong>{connection.sessionId}</strong></div>
               <button className="secondary wide" onClick={() => void disconnect()} disabled={acting}>{acting ? "Disconnecting…" : "Disconnect capture"}</button>

@@ -17,16 +17,30 @@ use std::{
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::{Child, Command},
-    sync::{Mutex, broadcast},
+    sync::{Mutex, broadcast, oneshot},
+    time::{Duration, timeout},
 };
 
 const EVENT_PREFIX: &str = "MAS_EVENT ";
+
+fn mode_spec(mode: &CaptureModeKind) -> String {
+    match mode {
+        CaptureModeKind::RegularProxy => "regular".into(),
+        CaptureModeKind::ReverseProxy { url } => format!("reverse:{url}"),
+        CaptureModeKind::UpstreamProxy { url } => format!("upstream:{url}"),
+        CaptureModeKind::Socks5 => "socks5".into(),
+        CaptureModeKind::DnsProxy => "dns".into(),
+        CaptureModeKind::LocalAll => "local".into(),
+        CaptureModeKind::LocalProcess { pid } => format!("local:{pid}"),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MitmDumpEngine {
     executable: PathBuf,
     addon_path: PathBuf,
     conf_dir: PathBuf,
+    rule_socket_path: Option<PathBuf>,
     sender: broadcast::Sender<CaptureEvent>,
     children: Arc<Mutex<HashMap<String, Child>>>,
 }
@@ -38,6 +52,7 @@ impl MitmDumpEngine {
             executable: PathBuf::from("mitmdump"),
             addon_path: addon_path.into(),
             conf_dir: conf_dir.into(),
+            rule_socket_path: None,
             sender,
             children: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -45,6 +60,11 @@ impl MitmDumpEngine {
 
     pub fn with_executable(mut self, executable: impl Into<PathBuf>) -> Self {
         self.executable = executable.into();
+        self
+    }
+
+    pub fn with_rule_socket(mut self, path: impl Into<PathBuf>) -> Self {
+        self.rule_socket_path = Some(path.into());
         self
     }
 
@@ -56,16 +76,25 @@ impl MitmDumpEngine {
         &self.conf_dir
     }
 
-    async fn spawn_stdout_reader(&self, stdout: tokio::process::ChildStdout, session_id: String) {
+    pub async fn is_running(&self, handle: &CaptureHandle) -> bool {
+        self.children.lock().await.get_mut(&handle.id)
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+    }
+
+    async fn spawn_stdout_reader(&self, stdout: tokio::process::ChildStdout, session_id: String, ready: oneshot::Sender<()>) {
         let sender = self.sender.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
+            let mut ready = Some(ready);
             while let Ok(Some(line)) = lines.next_line().await {
                 let Some(payload) = line.strip_prefix(EVENT_PREFIX) else {
                     continue;
                 };
 
                 match serde_json::from_str::<BridgeEvent>(payload) {
+                    Ok(BridgeEvent::EngineStarted) => {
+                        if let Some(ready) = ready.take() { let _ = ready.send(()); }
+                    }
                     Ok(event) => publish_bridge_event(&sender, &session_id, event),
                     Err(error) => {
                         let _ = sender.send(CaptureEvent::EngineFailed {
@@ -158,6 +187,8 @@ impl CaptureEngine for MitmDumpEngine {
             .arg(format!("confdir={}", self.conf_dir.display()))
             .arg("--set")
             .arg("block_global=false")
+            .arg("--set")
+            .arg("connection_strategy=lazy")
             .arg("-s")
             .arg(&self.addon_path)
             .env("MAS_SESSION_ID", &config.session_id)
@@ -165,20 +196,17 @@ impl CaptureEngine for MitmDumpEngine {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
-        match config.mode.kind {
-            CaptureModeKind::RegularProxy => {
-                command.arg("--mode").arg("regular");
-                command.arg("--listen-host").arg(&config.listen_host);
-                command
-                    .arg("--listen-port")
-                    .arg(config.listen_port.to_string());
-            }
-            CaptureModeKind::LocalAll => {
-                command.arg("--mode").arg("local");
-            }
-            CaptureModeKind::LocalProcess { pid } => {
-                command.arg("--mode").arg(format!("local:{pid}"));
-            }
+        if let Some(path) = &self.rule_socket_path {
+            command.env("MAS_RULE_SOCKET", path);
+        }
+
+        let mode = mode_spec(&config.mode.kind);
+        command.arg("--mode").arg(&mode);
+        if !matches!(config.mode.kind, CaptureModeKind::LocalAll | CaptureModeKind::LocalProcess { .. }) {
+            command.arg("--listen-host").arg(&config.listen_host);
+            command
+                .arg("--listen-port")
+                .arg(config.listen_port.to_string());
         }
 
         let mut child = command.spawn().map_err(|error| {
@@ -204,10 +232,48 @@ impl CaptureEngine for MitmDumpEngine {
             )
         })?;
 
-        self.spawn_stdout_reader(stdout, config.session_id.clone())
+        let (ready_sender, ready_receiver) = oneshot::channel();
+        self.spawn_stdout_reader(stdout, config.session_id.clone(), ready_sender)
             .await;
         self.spawn_stderr_drain(stderr).await;
+        let startup = tokio::select! {
+            result = timeout(Duration::from_secs(20), ready_receiver) => match result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(_)) => Err("Capture bridge closed before the listener was ready."),
+                Err(_) => Err("Capture listener did not become ready within 20 seconds."),
+            },
+            _ = child.wait() => Err("Capture engine exited before the listener was ready. Check the mode, port, and capture permissions."),
+        };
+        if let Err(message) = startup {
+            let _ = child.kill().await;
+            let _ = self.sender.send(CaptureEvent::LifecycleChanged(CaptureLifecycleState::Failed));
+            return Err(CaptureError::new("mitmdump_listener_start_failed", message, true));
+        }
+        if child.try_wait().map_err(|error| CaptureError::new("mitmdump_status_failed", error.to_string(), true))?.is_some() {
+            return Err(CaptureError::new("mitmdump_listener_start_failed", "Capture engine exited during startup.", true));
+        }
         self.children.lock().await.insert(handle_id.clone(), child);
+
+        let children = self.children.clone();
+        let sender = self.sender.clone();
+        let monitored_id = handle_id.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let mut children = children.lock().await;
+                let Some(child) = children.get_mut(&monitored_id) else { break };
+                if !matches!(child.try_wait(), Ok(None)) {
+                    children.remove(&monitored_id);
+                    let _ = sender.send(CaptureEvent::EngineFailed {
+                        code: "mitmdump_unexpected_exit".into(),
+                        message: "Capture engine stopped unexpectedly. Disconnect to restore the capture settings before reconnecting.".into(),
+                        recoverable: true,
+                    });
+                    let _ = sender.send(CaptureEvent::LifecycleChanged(CaptureLifecycleState::Failed));
+                    break;
+                }
+            }
+        });
 
         let _ = self.sender.send(CaptureEvent::EngineReady(capabilities));
         let _ = self
@@ -253,6 +319,7 @@ impl CaptureEngine for MitmDumpEngine {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BridgeEvent {
+    EngineStarted,
     FlowCompleted {
         id: String,
         started_at: String,
@@ -262,6 +329,10 @@ enum BridgeEvent {
         timing: BridgeTiming,
         mock_rule_id: Option<String>,
         mock_rule_name: Option<String>,
+        #[serde(default)]
+        proxy_rule_ids: Vec<String>,
+        #[serde(default)]
+        proxy_rule_changes: Vec<core_model::ProxyRuleChange>,
     },
     FlowFailed {
         id: String,
@@ -271,6 +342,11 @@ enum BridgeEvent {
         mock_rule_name: Option<String>,
     },
     MockRulesFailed {
+        code: String,
+        message: String,
+        rule_id: Option<String>,
+    },
+    ProxyRulesFailed {
         code: String,
         message: String,
         rule_id: Option<String>,
@@ -327,6 +403,7 @@ fn publish_bridge_event(
     event: BridgeEvent,
 ) {
     match event {
+        BridgeEvent::EngineStarted => {},
         BridgeEvent::FlowCompleted {
             id,
             started_at,
@@ -336,6 +413,8 @@ fn publish_bridge_event(
             timing,
             mock_rule_id,
             mock_rule_name: _,
+            proxy_rule_ids,
+            proxy_rule_changes,
         } => match normalize_captured_flow(
             session_id,
             id,
@@ -345,6 +424,8 @@ fn publish_bridge_event(
             response,
             timing,
             mock_rule_id.is_some(),
+            proxy_rule_ids,
+            proxy_rule_changes,
         ) {
             Ok(flow) => {
                 let _ = sender.send(CaptureEvent::FlowDetailCompleted(flow));
@@ -384,6 +465,10 @@ fn publish_bridge_event(
                 recoverable: true,
             });
         }
+        BridgeEvent::ProxyRulesFailed { code, message, rule_id } => {
+            let message = rule_id.map(|id| format!("Proxy rule {id}: {message}")).unwrap_or(message);
+            let _ = sender.send(CaptureEvent::EngineFailed { code, message, recoverable: true });
+        }
     }
 }
 
@@ -397,6 +482,8 @@ fn normalize_captured_flow(
     response: BridgeResponse,
     timing: BridgeTiming,
     mocked: bool,
+    proxy_rule_ids: Vec<String>,
+    proxy_rule_changes: Vec<core_model::ProxyRuleChange>,
 ) -> Result<CapturedFlow, String> {
     let request_body = decode_body(request.body)?;
     let response_body = decode_body(response.body)?;
@@ -448,6 +535,8 @@ fn normalize_captured_flow(
         },
         error_code: None,
         error_message: None,
+        proxy_rule_ids,
+        proxy_rule_changes,
     })
 }
 
@@ -497,4 +586,45 @@ fn now_epoch_millis() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn startup_requires_bridge_readiness_and_live_child() {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let root = std::env::temp_dir().join(format!("mas-start-check-{}-{}", std::process::id(), now_epoch_millis()));
+            fs::create_dir_all(&root).unwrap();
+            let addon = root.join("addon.py");
+            fs::write(&addon, "").unwrap();
+            let executable = root.join("capture-stub");
+            let config = CaptureConfig { session_id: "check".into(), listen_host: "127.0.0.1".into(), listen_port: 8185,
+                mode: core_model::CaptureMode { schema_version: SCHEMA_VERSION, kind: CaptureModeKind::Socks5 } };
+            fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = '--version' ]; then echo stub; exit 0; fi\nexit 7\n").unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            let engine = MitmDumpEngine::new(&addon, root.join("conf")).with_executable(&executable);
+            assert_eq!(engine.start(config.clone()).await.unwrap_err().code, "mitmdump_listener_start_failed");
+            fs::write(&executable, "#!/bin/sh\nif [ \"$1\" = '--version' ]; then echo stub; exit 0; fi\nprintf 'MAS_EVENT {\"type\":\"engine_started\"}\\n'\nexec sleep 30\n").unwrap();
+            let handle = engine.start(config).await.unwrap();
+            assert!(engine.is_running(&handle).await);
+            engine.stop(handle.clone()).await.unwrap();
+            assert!(!engine.is_running(&handle).await);
+            fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
+    fn mitmdump_mode_specs() {
+        assert_eq!(mode_spec(&CaptureModeKind::ReverseProxy { url: "https://example.com".into() }), "reverse:https://example.com");
+        assert_eq!(mode_spec(&CaptureModeKind::UpstreamProxy { url: "http://127.0.0.1:8080".into() }), "upstream:http://127.0.0.1:8080");
+        assert_eq!(mode_spec(&CaptureModeKind::Socks5), "socks5");
+        assert_eq!(mode_spec(&CaptureModeKind::DnsProxy), "dns");
+        assert_eq!(mode_spec(&CaptureModeKind::RegularProxy), "regular");
+        assert_eq!(mode_spec(&CaptureModeKind::LocalAll), "local");
+        assert_eq!(mode_spec(&CaptureModeKind::LocalProcess { pid: 42 }), "local:42");
+    }
 }
