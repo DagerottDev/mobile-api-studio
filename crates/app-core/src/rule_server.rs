@@ -12,11 +12,19 @@ struct RuleRequest {
     method: String,
     host: String,
     path: String,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    network_profile_id: Option<String>,
 }
 
 #[derive(Serialize)]
 struct RuleResponse {
     rules: Vec<ProxyRule>,
+    #[serde(rename = "networkProfile")]
+    network_profile: Option<core_model::network_profiles::NetworkProfile>,
+    #[serde(rename = "networkProfileEnabled")]
+    network_profile_enabled: bool,
 }
 
 pub(super) fn socket_path() -> Result<PathBuf, String> {
@@ -29,6 +37,7 @@ pub(super) fn socket_path() -> Result<PathBuf, String> {
 }
 
 pub(super) fn start(database: Database, path: &Path) -> Result<JoinHandle<()>, String> {
+    let sdk_database = sdk_storage::SdkDatabase::open(database.path()).map_err(|error| error.to_string())?;
     let directory = path.parent().ok_or("Rule socket has no parent directory")?;
     fs::DirBuilder::new().recursive(true).mode(0o700).create(directory)
         .map_err(|error| error.to_string())?;
@@ -54,12 +63,13 @@ pub(super) fn start(database: Database, path: &Path) -> Result<JoinHandle<()>, S
             let Ok((stream, _)) = listener.accept().await else { break };
             if connections.len() >= 64 { continue; }
             let database = database.clone();
-            connections.spawn(async move { let _ = timeout(Duration::from_secs(3), serve_one(stream, &database)).await; });
+            let sdk_database = sdk_database.clone();
+            connections.spawn(async move { let _ = timeout(Duration::from_secs(3), serve_one(stream, &database, &sdk_database)).await; });
         }
     }))
 }
 
-async fn serve_one(mut stream: UnixStream, database: &Database) -> Result<(), String> {
+async fn serve_one(mut stream: UnixStream, database: &Database, sdk_database: &sdk_storage::SdkDatabase) -> Result<(), String> {
     let mut bytes = Vec::new();
     loop {
         let mut chunk = [0_u8; 1024];
@@ -69,7 +79,7 @@ async fn serve_one(mut stream: UnixStream, database: &Database) -> Result<(), St
         if bytes.last() == Some(&b'\n') { break; }
     }
     let request: RuleRequest = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-    if request.method.len() > 32 || request.host.len() > 255 || request.path.len() > 4096 {
+    if request.method.len() > 32 || request.host.len() > 255 || request.path.len() > 4096 || request.request_id.as_ref().is_some_and(|id| id.len() > 512) || request.network_profile_id.as_ref().is_some_and(|id| id.len() > 120) {
         return Err("Rule request fields are too large".into());
     }
     // ponytail: per-flow SQLite scan; cache validated rules when capture throughput makes this costly.
@@ -82,7 +92,11 @@ async fn serve_one(mut stream: UnixStream, database: &Database) -> Result<(), St
             matches.push(rule);
         }
     }
-    let mut response = serde_json::to_vec(&RuleResponse { rules: matches }).map_err(|error| error.to_string())?;
+    let profiles = database.list_network_profiles().map_err(|error| error.to_string())?;
+    let app_id = request.request_id.as_deref().map(|id| sdk_database.app_for_request(id)).transpose().map_err(|error| error.to_string())?.flatten();
+    let network_profile = core_model::network_profiles::select_profile(&profiles, &request.method, &request.host, &request.path, app_id.as_deref());
+    let network_profile_enabled = request.network_profile_id.as_ref().is_some_and(|id| profiles.iter().any(|profile| &profile.id == id && profile.enabled));
+    let mut response = serde_json::to_vec(&RuleResponse { rules: matches, network_profile, network_profile_enabled }).map_err(|error| error.to_string())?;
     if response.len() > MAX_RESPONSE_BYTES { return Err("Rule response too large".into()); }
     response.push(b'\n');
     stream.write_all(&response).await.map_err(|error| error.to_string())?;

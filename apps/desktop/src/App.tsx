@@ -5,6 +5,7 @@ import { AiView } from "./components/AiView";
 import { CompareView } from "./components/CompareView";
 import { ConnectView } from "./components/ConnectView";
 import { MocksView } from "./components/MocksView";
+import { NetworkProfilesView } from "./components/NetworkProfilesView";
 import { ProxyRulesView } from "./components/ProxyRulesView";
 import { MockUtilitiesView } from "./components/MockUtilitiesView";
 import { ReplayView } from "./components/ReplayView";
@@ -13,17 +14,18 @@ import { SettingsView } from "./components/SettingsView";
 import { SidecarSettingsPanel } from "./components/SidecarSettingsPanel";
 import { TrafficView } from "./components/TrafficView";
 import { WorkspaceView } from "./components/WorkspaceView";
-import type { CaptureSession, ConnectionSnapshot } from "./types";
+import type { CaptureSession, ConnectionSnapshot, NetworkProfile } from "./types";
 
-type Route = "Connect" | "Traffic" | "Replay" | "Mocks" | "Compare" | "AI" | "SDK" | "Workspace" | "Settings";
+type Route = "Connect" | "Traffic" | "Network" | "Replay" | "Mocks" | "Compare" | "AI" | "SDK" | "Workspace" | "Settings";
 
-const routes: Route[] = ["Connect", "Traffic", "Replay", "Mocks", "Compare", "AI", "SDK", "Workspace", "Settings"];
+const routes: Route[] = ["Connect", "Traffic", "Network", "Replay", "Mocks", "Compare", "AI", "SDK", "Workspace", "Settings"];
 const paths = Object.fromEntries(routes.map((name) => [name, `/${name.toLowerCase()}`])) as Record<Route, string>;
 const groups: { title: string; items: Route[] }[] = [
-  { title: "Capture", items: ["Connect", "Traffic"] },
+  { title: "Capture", items: ["Connect", "Traffic", "Network"] },
   { title: "Investigate", items: ["Replay", "Mocks", "Compare", "AI", "SDK"] },
   { title: "Organize", items: ["Workspace", "Settings"] },
 ];
+function errorText(value: unknown) { return value instanceof Error ? value.message : String(typeof value === "object" && value !== null && "message" in value ? value.message : value); }
 function routeFromPath(): Route {
   return routes.find((name) => paths[name] === window.location.pathname) ?? "Connect";
 }
@@ -34,6 +36,9 @@ function App() {
   const [sessions, setSessions] = useState<CaptureSession[]>([]);
   const [replaySavedRequestId, setReplaySavedRequestId] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionSnapshot | null>(null);
+  const [networkProfiles, setNetworkProfiles] = useState<NetworkProfile[]>([]);
+  const [networkProfileError, setNetworkProfileError] = useState<string | null>(null);
+  const [networkProfileMessage, setNetworkProfileMessage] = useState<string | null>(null);
 
   function navigate(next: Route) {
     window.history.pushState({}, "", paths[next]);
@@ -48,19 +53,41 @@ function App() {
     }
   }, []);
 
+  const refreshNetworkProfiles = useCallback(async () => {
+    try {
+      setNetworkProfiles(await invoke<NetworkProfile[]>("list_network_profiles"));
+      setNetworkProfileError(null);
+    } catch (error) {
+      setNetworkProfileError(errorText(error));
+    }
+  }, []);
+
+  async function disableAllNetworkProfiles() {
+    try {
+      const count = await invoke<number>("disable_all_network_profiles");
+      setNetworkProfileError(null);
+      setNetworkProfileMessage(`Disabled ${count} network profile${count === 1 ? "" : "s"}.`);
+      await refreshNetworkProfiles();
+    } catch (error) {
+      setNetworkProfileMessage(null);
+      setNetworkProfileError(errorText(error));
+    }
+  }
+
   useEffect(() => {
     invoke<string>("health")
       .then(setHealth)
-      .catch((error) => setHealth(`Local service unavailable: ${error instanceof Error ? error.message : String(error?.message ?? error)}`));
+      .catch((error) => setHealth(`Local service unavailable: ${errorText(error)}`));
     void refreshSessions();
+    void refreshNetworkProfiles();
     const refreshConnection = () => invoke<ConnectionSnapshot>("current_connection").then(setConnection).catch(() => setConnection(null));
     void refreshConnection();
     const onLocation = () => setRoute(routeFromPath());
     window.addEventListener("popstate", onLocation);
 
-    const timer = window.setInterval(() => { void refreshSessions(); void refreshConnection(); }, 2000);
+    const timer = window.setInterval(() => { void refreshSessions(); void refreshConnection(); void refreshNetworkProfiles(); }, 2000);
     return () => { window.clearInterval(timer); window.removeEventListener("popstate", onLocation); };
-  }, [refreshSessions]);
+  }, [refreshSessions, refreshNetworkProfiles]);
 
   function openSavedRequest(requestId: string) {
     setReplaySavedRequestId(requestId);
@@ -108,6 +135,12 @@ function App() {
       </aside>
 
       <main className="workspace">
+        {networkProfileError ? <div className="error-banner" role="alert">Network profile status: {networkProfileError}</div> : networkProfileMessage ? <div className="settings-message" role="status">{networkProfileMessage}</div> : null}
+        {networkProfiles.some((profile) => profile.enabled) ? <div className="panel" role="status" style={{ padding: 14, marginBottom: 14, borderColor: "var(--danger-line)" }}>
+          <strong>Network conditions are active</strong>
+          <span style={{ marginLeft: 8 }}>{networkProfiles.filter((profile) => profile.enabled).map((profile) => profile.name).join(" · ")}</span>
+          <button className="secondary compact" style={{ float: "right" }} onClick={() => void disableAllNetworkProfiles()}>Disable all</button>
+        </div> : null}
         <header className="toolbar">
           <div>
             <span className="eyebrow">MOBILE API STUDIO / {route.toUpperCase()}</span>
@@ -117,6 +150,8 @@ function App() {
                 ? "Discover and connect local mobile runtimes"
                 : route === "Traffic"
                   ? "Search and inspect traffic across capture sessions"
+                  : route === "Network"
+                  ? "Configure latency, bandwidth, offline, and request-failure profiles"
                   : route === "Replay"
                     ? "Edit and resend captured or saved requests"
                     : route === "Mocks"
@@ -136,6 +171,7 @@ function App() {
 
         {route === "Connect" ? <ConnectView onOpenTraffic={() => navigate("Traffic")} sharedConnection={connection} /> : null}
         {route === "Traffic" ? <TrafficView onOpenConnect={() => navigate("Connect")} /> : null}
+        {route === "Network" ? <NetworkProfilesView profiles={networkProfiles} refresh={refreshNetworkProfiles} /> : null}
         {route === "Replay" ? <ReplayView savedRequestId={replaySavedRequestId} /> : null}
         {route === "Mocks" ? <div className="mocks-page-stack"><ProxyRulesView /><MocksView /><MockUtilitiesView /></div> : null}
         {route === "Compare" ? <CompareView /> : null}

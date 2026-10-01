@@ -1,6 +1,7 @@
 mod detail;
 mod import;
 mod proxy_rules;
+mod network_profiles;
 mod websocket;
 mod workflow;
 
@@ -120,7 +121,7 @@ impl Database {
             )?;
             let migrated: bool = if has_migrations {
                 connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 6)",
+                    "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 7)",
                     [],
                     |row| row.get(0),
                 )?
@@ -129,7 +130,7 @@ impl Database {
             };
             if !migrated {
                 let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-                let backup = format!("{}.pre-websocket-{stamp}.bak", path.display());
+                let backup = format!("{}.pre-network-profiles-{stamp}.bak", path.display());
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::OpenOptionsExt;
@@ -168,6 +169,7 @@ impl Database {
         drop(connection);
         proxy_rules::initialize(self)?;
         websocket::initialize(self)?;
+        network_profiles::initialize(self)?;
         Ok(())
     }
 
@@ -578,7 +580,7 @@ mod capture_metadata_migration_tests {
                 .unwrap()
                 .file_name()
                 .to_string_lossy()
-                .contains("pre-websocket")
+                .contains("pre-network-profiles")
         }));
 
         let mut current = old_session;

@@ -144,7 +144,7 @@ mod tests {
         let mut new_message = WebSocketMessage { id: "new-msg".into(), flow_id: "missing-flow".into(), session_id: Some("new".into()), ..old_message.clone() };
         let make_replacement = |message: WebSocketMessage| WorkspaceReplacement {
             sessions: vec![ImportedSession { session: replacement_session.clone(), flows: vec![ImportedFlow { summary: replacement_flow.clone(), detail: None }] }],
-            collections: vec![], saved_requests: vec![], environments: vec![], environment_variables: vec![], proxy_rules: vec![], websocket_messages: vec![message],
+            collections: vec![], saved_requests: vec![], environments: vec![], environment_variables: vec![], proxy_rules: vec![], network_profiles: vec![], websocket_messages: vec![message],
         };
         assert!(database.replace_workspace(&make_replacement(new_message.clone())).is_err());
         assert_eq!(database.list_sessions(10).unwrap()[0].id, "old");

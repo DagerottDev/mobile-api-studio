@@ -151,6 +151,14 @@ impl SdkDatabase {
             .map_err(SdkStorageError::from)
     }
 
+    // A request ID attributed to multiple apps is ambiguous and must not select an app policy.
+    pub fn app_for_request(&self, request_id: &str) -> Result<Option<String>, SdkStorageError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare("SELECT DISTINCT c.app_id FROM sdk_events e JOIN sdk_clients c ON c.client_id=e.client_id WHERE e.request_id=?1 LIMIT 2")?;
+        let apps = statement.query_map([request_id], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(if apps.len() == 1 { apps.into_iter().next() } else { None })
+    }
+
     pub fn events_for_request(&self, request_id: &str) -> Result<Vec<SdkEnvelope>, SdkStorageError> {
         self.query_events(
             "SELECT payload_json FROM sdk_events WHERE request_id = ?1 ORDER BY occurred_at ASC, event_id ASC",
@@ -339,3 +347,23 @@ impl std::error::Error for SdkStorageError {}
 impl From<rusqlite::Error> for SdkStorageError { fn from(value: rusqlite::Error) -> Self { Self::Sqlite(value) } }
 impl From<std::io::Error> for SdkStorageError { fn from(value: std::io::Error) -> Self { Self::Io(value) } }
 impl From<serde_json::Error> for SdkStorageError { fn from(value: serde_json::Error) -> Self { Self::Json(value) } }
+
+#[cfg(test)]
+mod network_attribution_tests {
+    use super::*;
+    #[test]
+    fn network_profiles_require_unambiguous_sdk_attribution() {
+        let root = std::env::temp_dir().join(format!("mas-network-app-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let database = SdkDatabase::open(root.join("app.db")).unwrap();
+        assert!(database.app_for_request("missing").unwrap().is_none());
+        let connection = database.connection().unwrap();
+        for (client, app) in [("client-a", "app-a"), ("client-b", "app-b")] {
+            connection.execute("INSERT INTO sdk_clients(client_id,app_id,app_name,platform,sdk_version,first_seen_at,last_seen_at) VALUES(?1,?2,'fixture','other','1','1','1')", params![client, app]).unwrap();
+            connection.execute("INSERT INTO sdk_events(event_id,schema_version,client_id,event_kind,request_id,occurred_at,payload_json) VALUES(?1,1,?1,'network',?2,'1','{}')", params![client, if client == "client-a" { "request" } else { "other" }]).unwrap();
+        }
+        assert_eq!(database.app_for_request("request").unwrap().as_deref(), Some("app-a"));
+        connection.execute("UPDATE sdk_events SET request_id='request' WHERE client_id='client-b'", []).unwrap();
+        assert!(database.app_for_request("request").unwrap().is_none());
+        drop(connection); drop(database); std::fs::remove_dir_all(root).unwrap();
+    }
+}

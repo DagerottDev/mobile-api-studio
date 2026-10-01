@@ -391,6 +391,10 @@ enum BridgeEvent {
     },
     FlowFailed {
         id: String,
+        #[serde(default)]
+        request: Option<BridgeRequest>,
+        #[serde(default)]
+        started_at: Option<String>,
         code: String,
         message: String,
         mock_rule_id: Option<String>,
@@ -571,12 +575,23 @@ fn publish_bridge_event(
             }
         }
         BridgeEvent::FlowFailed {
-            id,
+            id, request, started_at,
             code,
             message,
             mock_rule_id: _,
             mock_rule_name: _,
         } => {
+            if let Some(request) = request {
+                let response = BridgeResponse { status_code: 599, reason: None, headers: vec![], body: None };
+                let timing = BridgeTiming { request_ms: None, server_ms: None, download_ms: None, total_ms: None };
+                if let Ok(mut flow) = normalize_captured_flow(session_id, id.clone(), started_at.unwrap_or_else(|| "0".into()), None, request, response, timing, false, vec![], vec![], None) {
+                    flow.summary.status_code = None;
+                    flow.response = None;
+                    flow.error_code = Some(code.clone());
+                    flow.error_message = Some(message.clone());
+                    let _ = sender.send(CaptureEvent::FlowDetailCompleted(flow));
+                }
+            }
             let _ = sender.send(CaptureEvent::FlowFailed {
                 flow_id: id,
                 code,

@@ -4,6 +4,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use capture_core::CaptureEngine;
 use core_model::{
     proxy_rules::{ProxyRule, ProxyRuleAction, RulePattern, RulePatternKind},
+    network_profiles::{NetworkProfile, validate_network_profiles},
     AppError, BodyRef, CaptureSession, Environment, EnvironmentVariable, FlowDetail, FlowSummary,
     OnboardingStep, SavedCollection, SavedRequest, SessionStatus, WebSocketMessage,
 };
@@ -16,7 +17,7 @@ use std::{collections::HashSet, fs};
 use storage::{ImportedFlow, ImportedSession, WorkspaceReplacement};
 use workspace_core::{ConnectionDoctorReport, DoctorCheck, DoctorStatus};
 
-const PORTABLE_BUNDLE_VERSION: u16 = 5;
+const PORTABLE_BUNDLE_VERSION: u16 = 6;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +31,8 @@ pub struct PortableWorkspaceBundle {
     pub environment_variables: Vec<EnvironmentVariable>,
     #[serde(default)]
     pub proxy_rules: Vec<PortableProxyRule>,
+    #[serde(default)]
+    pub network_profiles: Vec<NetworkProfile>,
     #[serde(default)]
     pub websocket_messages: Vec<PortableWebSocketMessage>,
 }
@@ -88,6 +91,8 @@ pub struct ImportSummary {
     pub map_local_files_omitted: usize,
     pub rule_actions_omitted: usize,
     pub proxy_rules_disabled: usize,
+    pub network_profiles: usize,
+    pub network_profiles_disabled: usize,
     pub websocket_messages: usize,
     pub search_index_warning: Option<String>,
 }
@@ -417,6 +422,7 @@ pub fn export_workspace(state: State<'_, AppState>) -> Result<PortableWorkspaceB
         environments,
         environment_variables,
         proxy_rules,
+        network_profiles: state.database.list_network_profiles().map_err(storage_error)?,
         websocket_messages,
     })
 }
@@ -464,7 +470,7 @@ pub async fn import_workspace(
     } else {
         None
     };
-    if !matches!(bundle.bundle_version, 2 | 3 | 4 | PORTABLE_BUNDLE_VERSION) {
+    if !matches!(bundle.bundle_version, 2 | 3 | 4 | 5 | PORTABLE_BUNDLE_VERSION) {
         return Err(AppError::new(
             "unsupported_bundle_version",
             format!(
@@ -496,6 +502,7 @@ pub async fn import_workspace(
     validate_bundle_bodies(&bundle)?;
     validate_bundle_messages(&bundle)?;
     let proxy_rules = validate_bundle_rules(&bundle, &mode, &state)?;
+    let network_profiles = validate_bundle_network_profiles(&bundle, &mode, &state)?;
     let imported_at = now_epoch_millis()?;
 
     if matches!(mode, ImportMode::Replace) {
@@ -507,7 +514,7 @@ pub async fn import_workspace(
                 true,
             ));
         }
-        let replacement = prepare_replacement(&bundle, &state, &imported_at, proxy_rules)?;
+        let replacement = prepare_replacement(&bundle, &state, &imported_at, proxy_rules, network_profiles)?;
         let old_secret_refs = state
             .database
             .replace_workspace(&replacement)
@@ -611,6 +618,10 @@ pub async fn import_workspace(
         state.database.upsert_proxy_rule(rule).map_err(storage_error)?;
     }
 
+    for profile in &network_profiles {
+        state.database.upsert_network_profile(profile).map_err(storage_error)?;
+    }
+
     Ok(ImportSummary {
         sessions: bundle.sessions.len(),
         flows: flow_count,
@@ -623,6 +634,8 @@ pub async fn import_workspace(
         map_local_files_omitted: bundle.proxy_rules.iter().filter(|item| item.map_local_file_omitted).count(),
         rule_actions_omitted: bundle.proxy_rules.iter().filter(|item| item.action_omitted).count(),
         proxy_rules_disabled: proxy_rules.len(),
+        network_profiles: network_profiles.len(),
+        network_profiles_disabled: network_profiles.len(),
         websocket_messages: bundle.websocket_messages.len(),
         search_index_warning: rebuild_imported_indexes(&bundle, &state).err().map(|_| "Workspace imported; search indexing failed. Use Rebuild search index in Settings.".into()),
     })
@@ -633,6 +646,7 @@ fn prepare_replacement(
     state: &State<'_, AppState>,
     imported_at: &str,
     proxy_rules: Vec<ProxyRule>,
+    network_profiles: Vec<NetworkProfile>,
 ) -> Result<WorkspaceReplacement, AppError> {
     let mut sessions = Vec::with_capacity(bundle.sessions.len());
     for portable_session in &bundle.sessions {
@@ -699,6 +713,7 @@ fn prepare_replacement(
         environments: bundle.environments.clone(),
         environment_variables,
         proxy_rules,
+        network_profiles,
         websocket_messages,
     })
 }
@@ -724,9 +739,26 @@ fn import_summary(bundle: &PortableWorkspaceBundle) -> ImportSummary {
         map_local_files_omitted: bundle.proxy_rules.iter().filter(|item| item.map_local_file_omitted).count(),
         rule_actions_omitted: bundle.proxy_rules.iter().filter(|item| item.action_omitted).count(),
         proxy_rules_disabled: bundle.proxy_rules.len(),
+        network_profiles: bundle.network_profiles.len(),
+        network_profiles_disabled: bundle.network_profiles.len(),
         websocket_messages: bundle.websocket_messages.len(),
         search_index_warning: None,
     }
+}
+
+fn validate_bundle_network_profiles(bundle: &PortableWorkspaceBundle, mode: &ImportMode, state: &State<'_, AppState>) -> Result<Vec<NetworkProfile>, AppError> {
+    if bundle.bundle_version < 6 && !bundle.network_profiles.is_empty() {
+        return Err(AppError::new("bundle_network_profiles_invalid", "Network profiles require bundle version 6.", true));
+    }
+    validate_network_profiles(&bundle.network_profiles).map_err(|error| AppError::new("bundle_network_profiles_invalid", error, true))?;
+    let profiles = bundle.network_profiles.iter().cloned().map(|mut profile| { profile.enabled = false; profile }).collect::<Vec<_>>();
+    if matches!(mode, ImportMode::Merge) {
+        let mut merged = state.database.list_network_profiles().map_err(storage_error)?;
+        merged.retain(|current| !profiles.iter().any(|profile| profile.id == current.id));
+        merged.extend(profiles.clone());
+        validate_network_profiles(&merged).map_err(|error| AppError::new("bundle_network_profiles_invalid", error, true))?;
+    }
+    Ok(profiles)
 }
 
 fn validate_bundle_rules(bundle: &PortableWorkspaceBundle, mode: &ImportMode, state: &State<'_, AppState>) -> Result<Vec<ProxyRule>, AppError> {
@@ -990,6 +1022,43 @@ mod tests {
     use core_model::{HeaderValue, RequestDetail, ResponseDetail, SCHEMA_VERSION, Timing};
 
     #[test]
+    fn network_profiles_bundle_v6_round_trip_disabled_and_replace_validation_preserves_data() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let root = std::env::temp_dir().join(format!("mas-network-bundle-{}-{}", std::process::id(), now_epoch_millis().unwrap()));
+            let state = crate::initialize_state(root.clone(), crate::resolve_addon_path().unwrap()).unwrap();
+            let profile = NetworkProfile { schema_version: 1, id: "slow".into(), name: "Slow".into(), enabled: true,
+                priority: 0, scope: core_model::network_profiles::NetworkScope::Global {},
+                latency_ms: 100, jitter_ms: 10, upload_bytes_per_second: None, download_bytes_per_second: Some(1024),
+                offline: false, failure_percent: 1.0, created_at: "1".into(), updated_at: "2".into() };
+            state.database.upsert_network_profile(&profile).unwrap();
+            let bundle = export_workspace(State(&state)).unwrap();
+            assert_eq!(bundle.bundle_version, 6);
+            assert_eq!(bundle.network_profiles, vec![profile.clone()]);
+            let mut invalid = bundle.clone(); invalid.network_profiles[0].latency_ms = 10_001;
+            assert_eq!(import_workspace(invalid, ImportMode::Replace, State(&state)).await.unwrap_err().code, "bundle_network_profiles_invalid");
+            assert_eq!(state.database.list_network_profiles().unwrap(), vec![profile.clone()]);
+            let mut duplicate = bundle.clone(); duplicate.network_profiles.push(profile.clone());
+            assert!(import_workspace(duplicate, ImportMode::Merge, State(&state)).await.is_err());
+            assert_eq!(state.database.list_network_profiles().unwrap(), vec![profile.clone()]);
+            for mode in [ImportMode::Merge, ImportMode::Replace] {
+                let summary = import_workspace(bundle.clone(), mode, State(&state)).await.unwrap();
+                assert_eq!(summary.network_profiles, 1); assert_eq!(summary.network_profiles_disabled, 1);
+                assert!(!state.database.list_network_profiles().unwrap()[0].enabled);
+            }
+            let mut old = serde_json::to_value(bundle).unwrap();
+            old.as_object_mut().unwrap().remove("networkProfiles");
+            for version in 2..=5 {
+                old["bundleVersion"] = version.into();
+                let old_bundle: PortableWorkspaceBundle = serde_json::from_value(old.clone()).unwrap();
+                assert!(old_bundle.network_profiles.is_empty());
+                import_workspace(old_bundle, ImportMode::Replace, State(&state)).await.unwrap();
+                assert!(state.database.list_network_profiles().unwrap().is_empty());
+            }
+            drop(state); std::fs::remove_dir_all(root).unwrap();
+        });
+    }
+
+    #[test]
     fn export_redacts_known_secret_headers_even_when_unmarked() {
         let mut detail = FlowDetail {
             summary: FlowSummary::fixture("flow", "GET", "example.test", "/", 200, 1, 0, "1"),
@@ -1125,7 +1194,7 @@ mod tests {
                     device_id: None, app_id: None, connection_strategy: None, capture_engine: None, notes: None,
                     capture_target: None, capture_mode: None }, flows: vec![PortableFlow { summary, detail: Some(detail),
                         request_body_base64: None, response_body_base64: None }] }],
-                collections: vec![], saved_requests: vec![], environments: vec![], environment_variables: vec![], proxy_rules: vec![],
+                collections: vec![], saved_requests: vec![], environments: vec![], environment_variables: vec![], proxy_rules: vec![], network_profiles: vec![],
                 websocket_messages: vec![PortableWebSocketMessage { message: message.clone(), body_base64: Some(BASE64.encode(&bytes)) }] };
             import_workspace(bundle, ImportMode::Merge, State(&state)).await.unwrap();
             assert_eq!(state.database.list_websocket_messages(None, None, Some("needle"), 10, 0).unwrap().len(), 1);
@@ -1236,7 +1305,7 @@ mod tests {
                     saved_requests: vec![],
                     environments: vec![],
                     environment_variables: vec![],
-                    proxy_rules: vec![],
+                    proxy_rules: vec![], network_profiles: vec![],
                     websocket_messages: Vec::new(),
                 };
 
@@ -1266,7 +1335,7 @@ mod tests {
                         enabled: true,
                         sort_order: 0,
                     }],
-                    proxy_rules: vec![],
+                    proxy_rules: vec![], network_profiles: vec![],
                     websocket_messages: Vec::new(),
                 };
                 let error = import_workspace(orphan_bundle, ImportMode::Replace, State(&state))
@@ -1300,7 +1369,7 @@ mod tests {
                         },
                     ],
                     environment_variables: vec![],
-                    proxy_rules: vec![],
+                    proxy_rules: vec![], network_profiles: vec![],
                     websocket_messages: Vec::new(),
                 };
                 assert!(
@@ -1379,7 +1448,7 @@ mod tests {
                         enabled: true,
                         sort_order: 0,
                     }],
-                    proxy_rules: vec![],
+                    proxy_rules: vec![], network_profiles: vec![],
                     websocket_messages: Vec::new(),
                 };
                 let result = import_workspace(valid_bundle, ImportMode::Replace, State(&state))

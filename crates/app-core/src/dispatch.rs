@@ -15,6 +15,10 @@ fn output<T: serde::Serialize>(value: T) -> Result<Value, AppError> {
 
 pub async fn invoke(command: &str, args: Value, state: &AppState) -> Result<Value, AppError> {
     match command {
+        "list_network_profiles" => output(crate::network_commands::list_network_profiles(State(state))?),
+        "upsert_network_profile" => output(crate::network_commands::upsert_network_profile(input(&args, "profile")?, State(state))?),
+        "delete_network_profile" => output(crate::network_commands::delete_network_profile(input(&args, "id")?, State(state))?),
+        "disable_all_network_profiles" => output(crate::network_commands::disable_all_network_profiles(State(state))?),
         "preview_proxy_rule" => {
             let rule = input(&args, "rule")?;
             let request = input(&args, "request")?;

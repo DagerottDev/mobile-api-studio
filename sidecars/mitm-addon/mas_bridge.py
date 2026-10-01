@@ -4,6 +4,7 @@ import ipaddress
 import json
 import mimetypes
 import os
+import random
 import stat
 import time
 import weakref
@@ -672,7 +673,7 @@ async def dns_request(flow: dns.DNSFlow) -> None:
         flow.response = flow.request.fail(dns.response_codes.SERVFAIL)
 
 
-async def request(flow: http.HTTPFlow) -> None:
+async def _request_rules(flow: http.HTTPFlow) -> None:
     _capture_sdk_request_id(flow)
     tls_rule = _TLS_POLICIES.get(flow.client_conn, {}).get("rule")
     if tls_rule:
@@ -753,6 +754,70 @@ async def request(flow: http.HTTPFlow) -> None:
         timeout_ms = int(rule.get("latencyMs") or 30000)
         await asyncio.sleep(max(0, timeout_ms) / 1000.0)
         flow.kill()
+
+
+
+async def _network_document(flow: http.HTTPFlow, profile_id: str | None = None) -> dict:
+    if not RULE_SOCKET:
+        return {"networkProfile": None, "networkProfileEnabled": False}
+    request = flow.request
+    reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(RULE_SOCKET, limit=MAX_RULE_RESPONSE_BYTES), 2)
+    try:
+        writer.write(json.dumps({"method": request.method, "host": request.pretty_host or request.host,
+            "path": urlsplit(request.url).path or "/", "request_id": flow.metadata.get("mas_sdk_request_id"),
+            "network_profile_id": profile_id}, separators=(",", ":")).encode() + b"\n")
+        await asyncio.wait_for(writer.drain(), 2)
+        line = await asyncio.wait_for(reader.readline(), 2)
+        if not line or len(line) > MAX_RULE_RESPONSE_BYTES + 1:
+            raise ValueError("Network profile service returned no bounded response")
+        document = json.loads(line)
+        if not isinstance(document, dict): raise ValueError("Invalid network profile response")
+        return document
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def _network_wait(flow: http.HTTPFlow, profile: dict, seconds: float) -> None:
+    # ponytail: buffered message delay simulates end-to-end body rate, not smooth packet pacing.
+    if seconds > 120:
+        raise ValueError("Network profile transfer delay exceeds the 120-second per-stage limit")
+    deadline = time.monotonic() + max(0, seconds)
+    while flow.live and time.monotonic() < deadline:
+        if not (await _network_document(flow, str(profile["id"]))).get("networkProfileEnabled", False):
+            return
+        await asyncio.sleep(min(0.1, max(0, deadline - time.monotonic())))
+
+
+def _network_error(flow: http.HTTPFlow, code: str, message: str) -> None:
+    request = flow.request
+    parsed = urlsplit(request.url)
+    _emit({"type": "flow_failed", "id": flow.id, "code": code, "message": message, "recoverable": True,
+        "started_at": str(_millis(request.timestamp_start) or 0),
+        "request": {"method": request.method, "url": request.url, "scheme": request.scheme,
+            "host": request.pretty_host or request.host, "port": request.port, "path": parsed.path or "/",
+            "query": parsed.query or None, "headers": _captured_request_headers(flow),
+            "body": _body(request.raw_content, request.headers.get("content-type"), request.headers.get("content-encoding"))}})
+    flow.metadata["mas_network_failed"] = True
+    flow.kill()
+
+
+async def request(flow: http.HTTPFlow) -> None:
+    await _request_rules(flow)
+    if not flow.live: return
+    try:
+        profile = (await _network_document(flow)).get("networkProfile")
+        flow.metadata["mas_network_profile"] = profile
+        if profile is None: return
+        if profile["offline"] or random.random() * 100 < profile["failurePercent"]:
+            reason = "offline simulation" if profile["offline"] else "simulated request failure"
+            _network_error(flow, "network_profile_offline" if profile["offline"] else "network_profile_failure", f"{profile['name']}: {reason}. This is not transport packet loss.")
+            return
+        delay = max(0, profile["latencyMs"] + random.uniform(-profile["jitterMs"], profile["jitterMs"])) / 1000
+        rate = profile.get("uploadBytesPerSecond")
+        await _network_wait(flow, profile, delay + (len(flow.request.raw_content or b"") / rate if rate else 0))
+    except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError, asyncio.TimeoutError, asyncio.LimitOverrunError) as error:
+        _network_error(flow, "network_profile_failed", str(error))
 
 
 def _set_json_pointer(document, pointer: str, value, remove: bool) -> None:
@@ -887,6 +952,15 @@ async def response(flow: http.HTTPFlow) -> None:
         flow.kill()
         return
 
+    profile = flow.metadata.get("mas_network_profile")
+    if profile is not None:
+        try:
+            rate = profile.get("downloadBytesPerSecond")
+            await _network_wait(flow, profile, len(response.raw_content or b"") / rate if rate else 0)
+        except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError, asyncio.TimeoutError, asyncio.LimitOverrunError) as error:
+            _network_error(flow, "network_profile_failed", str(error))
+            return
+
     parsed = urlsplit(request.url)
     response_size = len(response.raw_content) if response.raw_content is not None else None
     started_at = str(_millis(request.timestamp_start) or 0)
@@ -990,6 +1064,7 @@ def websocket_end(flow: http.HTTPFlow) -> None:
 
 
 def error(flow: http.HTTPFlow) -> None:
+    if flow.metadata.get("mas_network_failed"): return
     error_message = flow.error.msg if flow.error is not None else "Unknown proxy error"
     _emit({
         "type": "flow_failed",

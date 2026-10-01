@@ -350,6 +350,7 @@ export function TrafficView({ onOpenConnect }: { onOpenConnect: () => void }) {
 
         {detail ? (
           <div className="inspector-scroll">
+            {detail.errorMessage ? <section className="inspector-section" role="alert"><h3>Request failed</h3><p>{detail.errorCode ? `${detail.errorCode}: ` : ""}{detail.errorMessage}</p></section> : null}
             <InspectorSummary detail={detail} sessionName={selectedSearchResult?.sessionName ?? null} endpointKey={selectedSearchResult?.endpoint.key ?? null} />
             <InspectorProtocol detail={detail} />
             <InspectorProxyRules detail={detail} />

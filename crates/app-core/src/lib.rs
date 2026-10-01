@@ -6,6 +6,7 @@ mod fixture_commands;
 mod inspect;
 mod mock_commands;
 mod proxy_rule_commands;
+mod network_commands;
 mod protocol_commands;
 mod search_index;
 pub use inspect::ingest_capture_event as ingest_capture_event_for_storage;

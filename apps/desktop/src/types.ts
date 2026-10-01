@@ -361,6 +361,29 @@ export interface PortableSession {
   flows: PortableFlow[];
 }
 
+export type NetworkProfileScope =
+  | { type: "global" }
+  | { type: "app"; appId: string }
+  | { type: "host"; host: string }
+  | { type: "endpoint"; method: string; host: string; path: string };
+
+export interface NetworkProfile {
+  schemaVersion: 1;
+  id: string;
+  name: string;
+  enabled: boolean;
+  priority: number;
+  scope: NetworkProfileScope;
+  latencyMs: number;
+  jitterMs: number;
+  uploadBytesPerSecond: number | null;
+  downloadBytesPerSecond: number | null;
+  offline: boolean;
+  failurePercent: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PortableWorkspaceBundle {
   bundleVersion: number;
   exportedAt: string;
@@ -371,6 +394,7 @@ export interface PortableWorkspaceBundle {
   environmentVariables: EnvironmentVariable[];
   proxyRules: { rule: ProxyRule; mapLocalFileOmitted: boolean; actionOmitted: boolean }[];
   websocketMessages?: { message: WebSocketMessage; bodyBase64: string | null }[];
+  networkProfiles?: NetworkProfile[];
 }
 
 export interface ImportSummary {
@@ -386,5 +410,7 @@ export interface ImportSummary {
   mapLocalFilesOmitted: number;
   ruleActionsOmitted: number;
   websocketMessages?: number;
+  networkProfiles?: number;
+  networkProfilesDisabled?: number;
   searchIndexWarning?: string | null;
 }

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod proxy_rules;
+pub mod network_profiles;
 
 pub const SCHEMA_VERSION: u16 = 1;
 pub const PROJECT_BUNDLE_VERSION: u16 = 1;

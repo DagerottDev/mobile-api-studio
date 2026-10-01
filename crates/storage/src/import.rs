@@ -1,6 +1,7 @@
 use super::{Database, StorageError, flow_source_to_str, session_status_to_str, websocket, workflow};
 use core_model::{
     proxy_rules::ProxyRule,
+    network_profiles::{NetworkProfile, validate_network_profiles},
     CaptureSession, Environment, EnvironmentVariable, FlowDetail, FlowSummary, SavedCollection,
     SavedRequest, WebSocketMessage,
 };
@@ -23,6 +24,7 @@ pub struct WorkspaceReplacement {
     pub environments: Vec<Environment>,
     pub environment_variables: Vec<EnvironmentVariable>,
     pub proxy_rules: Vec<ProxyRule>,
+    pub network_profiles: Vec<NetworkProfile>,
     pub websocket_messages: Vec<WebSocketMessage>,
 }
 
@@ -33,6 +35,7 @@ impl Database {
         &self,
         replacement: &WorkspaceReplacement,
     ) -> Result<Vec<String>, StorageError> {
+        validate_network_profiles(&replacement.network_profiles).map_err(StorageError::InvalidInput)?;
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
         let old_secret_refs = {
@@ -47,6 +50,7 @@ impl Database {
         transaction.execute("DELETE FROM saved_collections", [])?;
         transaction.execute("DELETE FROM sessions", [])?;
         transaction.execute("DELETE FROM proxy_rules", [])?;
+        transaction.execute("DELETE FROM network_profiles", [])?;
 
         for imported in &replacement.sessions {
             let session = &imported.session;
@@ -146,6 +150,12 @@ impl Database {
             transaction.execute(
                 "INSERT INTO proxy_rules (id, enabled, priority, created_at, rule_json) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![&rule.id, rule.enabled, rule.priority, &rule.created_at, serde_json::to_string(rule)?],
+            )?;
+        }
+        for profile in &replacement.network_profiles {
+            transaction.execute(
+                "INSERT INTO network_profiles (id, enabled, priority, created_at, profile_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![&profile.id, profile.enabled, profile.priority, &profile.created_at, serde_json::to_string(profile)?],
             )?;
         }
         for message in &replacement.websocket_messages {

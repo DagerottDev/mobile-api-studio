@@ -91,7 +91,7 @@ export function SettingsView() {
       const bundle = await invoke<PortableWorkspaceBundle>("export_workspace");
       const json = JSON.stringify(bundle, null, 2);
       setBundleText(json);
-      setMessage(`Review this bundle snapshot before downloading: ${bundle.sessions.length} sessions, ${bundle.collections.length} collections, ${bundle.environments.length} environments, ${bundle.proxyRules.length} proxy rules, and ${bundle.websocketMessages?.length ?? 0} WebSocket messages.`);
+      setMessage(`Review this bundle snapshot before downloading: ${bundle.sessions.length} sessions, ${bundle.collections.length} collections, ${bundle.environments.length} environments, ${bundle.proxyRules.length} proxy rules, ${bundle.networkProfiles?.length ?? 0} network profiles, and ${bundle.websocketMessages?.length ?? 0} WebSocket messages.`);
       setError(null);
     } catch (value) {
       setError(formatInvokeError(value));
@@ -170,7 +170,7 @@ export function SettingsView() {
       const summary = await invoke<ImportSummary>("import_workspace", { bundle, mode: importMode });
       setImportSummary(summary);
       setMessage(
-        `Imported ${summary.sessions} sessions, ${summary.flows} flows, and ${summary.proxyRules} proxy rules. ${summary.proxyRulesDisabled} imported rules are disabled until reviewed. ${summary.secretValuesOmitted} secret values require re-entry.`,
+        `Imported ${summary.sessions} sessions, ${summary.flows} flows, and ${summary.proxyRules} proxy rules. ${summary.proxyRulesDisabled} imported rules and ${summary.networkProfilesDisabled ?? 0} network profiles are disabled until reviewed. ${summary.secretValuesOmitted} secret values require re-entry.`,
       );
       setError(summary.searchIndexWarning ?? null);
     } catch (value) {
@@ -281,7 +281,7 @@ export function SettingsView() {
         <div className="privacy-note">
           <strong>Review before download:</strong> environment secret values, Keychain references, sensitive rule actions,
           Map Local files, and rule audit metadata are omitted; sensitive headers and trailers are redacted. Captured HTTP and WebSocket bodies, protocol and public connection details are included
-          and may contain application data. Imported proxy rules start disabled.
+          and may contain application data. Imported proxy rules and network profiles start disabled.
         </div>
         {bundleText ? (
           <>
