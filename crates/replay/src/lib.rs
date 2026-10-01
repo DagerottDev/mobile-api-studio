@@ -99,6 +99,10 @@ impl ReplayEngine {
             .map_err(|error| ReplayError::invalid_request(format!("invalid method: {error}")))?;
         let parsed = Url::parse(&request.url)
             .map_err(|error| ReplayError::invalid_request(format!("invalid URL: {error}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") || !parsed.username().is_empty() || parsed.password().is_some() || parsed.fragment().is_some()
+            || request.url.len() > 8192 || request.headers.len() > 100 || request.body.as_ref().is_some_and(|body| body.len() > 2 * 1024 * 1024) {
+            return Err(ReplayError::invalid_request("Use a bounded HTTP(S) URL without credentials or a fragment, at most 100 headers and a body of 2 MiB or smaller"));
+        }
         let scheme = parsed.scheme().to_string();
         let host = parsed
             .host_str()
@@ -125,6 +129,11 @@ impl ReplayEngine {
             builder = builder.header(name, value);
         }
 
+        if !request.headers.iter().any(|header| header.name.eq_ignore_ascii_case("content-type")) {
+            if let Some(content_type) = &request.content_type {
+                builder = builder.header(reqwest::header::CONTENT_TYPE, HttpHeaderValue::from_str(content_type).map_err(|_| ReplayError::invalid_request("Invalid body content type"))?);
+            }
+        }
         if let Some(body) = &request.body {
             builder = builder.body(body.clone());
         }

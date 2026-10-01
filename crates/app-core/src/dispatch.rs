@@ -15,6 +15,10 @@ fn output<T: serde::Serialize>(value: T) -> Result<Value, AppError> {
 
 pub async fn invoke(command: &str, args: Value, state: &AppState) -> Result<Value, AppError> {
     match command {
+        "preview_interchange" => output(crate::interchange_commands::preview_interchange(input(&args, "format")?, input(&args, "text")?, State(state))?),
+        "export_interchange" => output(crate::interchange_commands::export_interchange(input(&args, "format")?, input(&args, "flowIds")?, input(&args, "savedRequestIds")?, State(state))?),
+        "repeat_replay" => output(crate::replay_commands::repeat_replay(input(&args, "draft")?, input(&args, "count")?, input(&args, "intervalMs")?, input(&args, "concurrency")?, State(state)).await?),
+        "save_composed_request" => output(crate::replay_commands::save_composed_request(input(&args, "draft")?, input(&args, "collectionId")?, input(&args, "name")?, State(state))?),
         "list_network_profiles" => output(crate::network_commands::list_network_profiles(State(state))?),
         "upsert_network_profile" => output(crate::network_commands::upsert_network_profile(input(&args, "profile")?, State(state))?),
         "delete_network_profile" => output(crate::network_commands::delete_network_profile(input(&args, "id")?, State(state))?),

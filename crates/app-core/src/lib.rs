@@ -4,6 +4,7 @@ mod breakpoint_commands;
 mod compare_commands;
 mod fixture_commands;
 mod inspect;
+mod interchange_commands;
 mod mock_commands;
 mod proxy_rule_commands;
 mod network_commands;
