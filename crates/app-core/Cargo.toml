@@ -22,6 +22,8 @@ mock-fixtures = { path = "../mock-fixtures" }
 mock-storage = { path = "../mock-storage" }
 prost-reflect = { version = "0.16.5", features = ["serde"] }
 replay = { path = "../replay" }
+reqwest.workspace = true
+rusqlite.workspace = true
 sdk-protocol = { path = "../sdk-protocol" }
 sdk-storage = { path = "../sdk-storage" }
 sdk-transport = { path = "../sdk-transport" }

@@ -18,6 +18,8 @@ mod replay_commands;
 mod sdk_commands;
 mod settings_commands;
 mod sidecar_commands;
+mod sharing_transport;
+mod sharing_commands;
 mod workspace_commands;
 
 use ai_storage::AiDatabase;

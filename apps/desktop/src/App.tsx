@@ -10,20 +10,21 @@ import { ProxyRulesView } from "./components/ProxyRulesView";
 import { MockUtilitiesView } from "./components/MockUtilitiesView";
 import { ReplayView } from "./components/ReplayView";
 import { SdkView } from "./components/SdkView";
+import { SharingView } from "./components/SharingView";
 import { SettingsView } from "./components/SettingsView";
 import { SidecarSettingsPanel } from "./components/SidecarSettingsPanel";
 import { TrafficView } from "./components/TrafficView";
 import { WorkspaceView } from "./components/WorkspaceView";
 import type { CaptureSession, ConnectionSnapshot, NetworkProfile } from "./types";
 
-type Route = "Connect" | "Traffic" | "Network" | "Replay" | "Mocks" | "Compare" | "AI" | "SDK" | "Workspace" | "Settings";
+type Route = "Connect" | "Traffic" | "Network" | "Replay" | "Mocks" | "Compare" | "AI" | "SDK" | "Workspace" | "Sharing" | "Settings";
 
-const routes: Route[] = ["Connect", "Traffic", "Network", "Replay", "Mocks", "Compare", "AI", "SDK", "Workspace", "Settings"];
+const routes: Route[] = ["Connect", "Traffic", "Network", "Replay", "Mocks", "Compare", "AI", "SDK", "Workspace", "Sharing", "Settings"];
 const paths = Object.fromEntries(routes.map((name) => [name, `/${name.toLowerCase()}`])) as Record<Route, string>;
 const groups: { title: string; items: Route[] }[] = [
   { title: "Capture", items: ["Connect", "Traffic", "Network"] },
   { title: "Investigate", items: ["Replay", "Mocks", "Compare", "AI", "SDK"] },
-  { title: "Organize", items: ["Workspace", "Settings"] },
+  { title: "Organize", items: ["Workspace", "Sharing", "Settings"] },
 ];
 function errorText(value: unknown) { return value instanceof Error ? value.message : String(typeof value === "object" && value !== null && "message" in value ? value.message : value); }
 function routeFromPath(): Route {
@@ -164,6 +165,7 @@ function App() {
                             ? "Connect app context, logs, screens, features, and source locations to network flows"
                             : route === "Workspace"
                               ? "Manage sessions, saved requests, and environments"
+                              : route === "Sharing" ? "Review selected traffic, manage expiring links, and sync team rules explicitly"
                               : "Connection Doctor, onboarding, backup, restore, capture setup, and optional AI provider settings"}
             </p>
           </div>
@@ -178,6 +180,7 @@ function App() {
         {route === "AI" ? <AiView /> : null}
         {route === "SDK" ? <SdkView /> : null}
         {route === "Workspace" ? <WorkspaceView onOpenReplay={openSavedRequest} /> : null}
+        {route === "Sharing" ? <SharingView /> : null}
         {route === "Settings" ? (
           <>
             <SettingsView />

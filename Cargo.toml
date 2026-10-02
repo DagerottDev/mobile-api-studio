@@ -4,6 +4,7 @@ members = [
   "apps/desktop/src-tauri",
   "apps/local-server",
   "apps/script-worker",
+  "apps/sharing-server",
   "crates/app-core",
   "crates/core-model",
   "crates/capture-core",

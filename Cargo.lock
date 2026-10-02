@@ -96,6 +96,8 @@ dependencies = [
  "prost-reflect",
  "prost-types",
  "replay",
+ "reqwest",
+ "rusqlite",
  "sdk-protocol",
  "sdk-storage",
  "sdk-transport",
@@ -2356,6 +2358,23 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower-http 0.7.1",
+]
+
+[[package]]
+name = "mobile-api-studio-sharing-server"
+version = "0.0.1"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "libc",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "url",
 ]
 
 [[package]]

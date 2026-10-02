@@ -167,7 +167,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), AppError> {
     })
 }
 
-fn validate_fixture(fixture: &MockFixture) -> Result<(), AppError> {
+pub(crate) fn validate_fixture(fixture: &MockFixture) -> Result<(), AppError> {
     if fixture.name.trim().is_empty() {
         return Err(AppError::new(
             "mock_fixture_name_required",

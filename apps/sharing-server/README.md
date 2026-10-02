@@ -1,0 +1,32 @@
+# Self-hosted sharing and team workspace
+
+This is an opt-in service for **explicitly selected and previewed** HAR uploads and versioned proxy rule/response fixture definitions. Sign-in reads identity only. It starts no capture and transfers no local data automatically. One deployment contains one team. Multiple teams use separate private data directories and deployments.
+
+Run `cargo run -p mobile-api-studio-sharing-server -- --data-dir /absolute/private/sharing-directory` after adding the crate to the repository workspace. The directory must be private (0700), owned by the effective Unix user, and not a symlink. Existing database and journal files must be regular private owned files without symlinks or extra hard links. This release fails closed on non-Unix hosts; Windows deployment requires owner-only ACL support before it can run. The default listener is `127.0.0.1:8190`. Owner bootstrap generates a 256-bit token and writes it once to `owner-access-token`, mode 0600. It never reads, overwrites, or logs that file. Transfer the token privately, remove the bootstrap file after setup, and rotate the owner's token through the owner API. A failed bootstrap with an existing token file refuses to overwrite it; resolve it locally before restarting. An explicitly supplied `MAS_SHARING_OWNER_TOKEN` must be 64 cryptographically random hex characters; the service only stores its SHA-256 hash and creates no token file. Never put real tokens in shell history or screenshots.
+
+For a browser client, optionally set one exact `--desktop-origin http://localhost:1420` (or `tauri://localhost`). Without it, requests with an Origin header are denied. Native desktop transport does not need CORS. Explicit `--listen ADDRESS:PORT` enables remote listening; the owner must provide and verify a TLS reverse proxy, deployment access, and backup/retention policy. The service itself supplies no TLS, cloud hosting, hosted identity provider, email invitation delivery, or password flow. Reverse proxies must not log `/s/` token paths or Authorization headers and must preserve `private, no-store` responses. Public links are bearer secrets: anyone possessing an active link can download that HAR until expiry or revocation.
+
+All authenticated endpoints require `Authorization: Bearer ACCESS_TOKEN`; generated access tokens contain 64 lowercase hexadecimal characters. Owner/member/share token hashes are stored in the private SQLite database. Tokens are issued once in authenticated responses; a member has one active access token. Rotation invalidates its prior token immediately. Roles are owner, editor, viewer. Owners administer membership; owners/editors publish and update team definitions; viewers read only. Every protected operation resolves the current role, including after role changes. Removing a member invalidates access and revokes their shares. The last owner cannot be removed or demoted.
+
+| Method and route | Request | Response |
+| --- | --- | --- |
+| GET `/v1/me` | — | `{teamId,teamName,userId,userName,role}` |
+| POST `/v1/shares` | `{artifact,expiresInSeconds,sha256?}` | `{id,urlPath,expiresAt,sha256}` |
+| GET `/v1/shares` | — | `{shares:[{id,creatorId,expiresAt,sha256,revoked}]}`; never returns link tokens |
+| DELETE `/v1/shares/{id}` | — | 204; owner/editor or creator; artifact bytes are erased |
+| GET `/s/{token}` | Public link | Exact original HAR bytes, attachment download; 404 for absent/revoked/expired |
+| GET `/v1/workspace` | — | `{schemaVersion:1,revision,rules,fixtures}` |
+| PUT `/v1/workspace` | `{schemaVersion:1,expectedRevision,rules,fixtures}` | Updated document; 409 if revision changed |
+| GET `/v1/members` | Owner only | `{members:[{userId,userName,role}]}` |
+| POST `/v1/members` | Owner: `{name,role}` | `{member:{userId,userName,role},accessToken}` |
+| PATCH `/v1/members/{id}` | Owner: `{role}` | 204 |
+| POST `/v1/members/{id}/token` | Owner; no body | `{accessToken}`; invalidates previous token |
+| DELETE `/v1/members/{id}` | Owner | 204 |
+
+`expiresAt` is Unix seconds. TTL is 1–604800 seconds (seven days). HAR is limited to 4 MiB and 1–500 entries. Request envelopes are limited to 6 MiB; workspace arrays to 500 rules/500 fixtures, membership to 100, stored share records to 1000, and active artifact storage to 64 MiB. Expired and revoked share records are deleted on the next valid upload; revocation clears artifact bytes immediately. Expiry blocks retrieval immediately but is not a background deletion job. SQLite files and backups can retain prior deleted pages; deletion is not a secure erasure guarantee.
+
+Uploads accept only the supported HAR 1.2 creator/entry/request/response/content/timing fields produced by Mobile API Studio's export. Extra fields, duplicate JSON keys, cookies, SDK headers, unredacted known secret headers/query names, PEM material, credential URLs, and known private key markers are rejected before a write. The service preserves artifact bytes and verifies the optional preview digest; it never redacts after upload. Preview and owner review remain necessary: arbitrary secrets in free-form bodies, ordinary header names, paths, or binary data cannot be reliably identified automatically. Query and body inclusion must be explicitly selected in the desktop preview.
+
+Rules and fixtures use the existing schema version 1 fields. Scripts and local-file actions are excluded, fixture `sourceFlowId` must be null, and secret/correlation headers must be omitted or redacted. Definitions are stored only; the service executes no rules and binds no fixtures to traffic. A workspace PUT replaces the selected shared document with revision compare-and-swap. Desktop import must be a separate reviewed action with disabled rules and fresh local IDs. There is no sign-in-triggered sync or background merge loop.
+
+Focused check: `cargo build -p mobile-api-studio-sharing-server --offline`, then `python3 apps/sharing-server/checks/http_check.py target/debug/mobile-api-studio-sharing-server`. It starts a temporary loopback service with synthetic credentials and a disposable database. It checks exact bytes/hash, expiry/revocation, role access, CAS, identity-only sign-in, malformed/redaction rejection, token rotation, member revocation, and exact browser origin isolation, bootstrap permissions/restart, and dangling database symlink refusal. It does not certify owner deployment, TLS, backups, device compatibility, or release acceptance.
