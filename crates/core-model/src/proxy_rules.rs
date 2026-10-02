@@ -64,6 +64,7 @@ pub enum ProxyRuleAction {
     MapRemote { url: String },
     RewriteRequest { headers: Vec<RuleHeaderMutation>, body: Option<String> },
     RewriteResponse { headers: Vec<RuleHeaderMutation>, body: Option<String> },
+    ScriptHook { stage: String, script: String },
     Breakpoint { stage: BreakpointStage },
     InspectHttps { enabled: bool },
     NoCache,

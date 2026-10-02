@@ -17,7 +17,7 @@ use std::{collections::HashSet, fs};
 use storage::{ImportedFlow, ImportedSession, WorkspaceReplacement};
 use workspace_core::{ConnectionDoctorReport, DoctorCheck, DoctorStatus};
 
-const PORTABLE_BUNDLE_VERSION: u16 = 6;
+const PORTABLE_BUNDLE_VERSION: u16 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -427,6 +427,26 @@ pub fn export_workspace(state: State<'_, AppState>) -> Result<PortableWorkspaceB
     })
 }
 
+pub fn export_selected_script_rules(ids: Vec<String>, state: State<'_, AppState>) -> Result<PortableWorkspaceBundle, AppError> {
+    if ids.is_empty() || ids.len() > 100 || ids.iter().collect::<HashSet<_>>().len() != ids.len() {
+        return Err(AppError::new("script_export_selection_invalid", "Select 1–100 distinct stored script rules.", true));
+    }
+    let stored = state.database.list_proxy_rules().map_err(storage_error)?;
+    let mut rules = Vec::new();
+    for id in ids {
+        let mut rule = stored.iter().find(|rule| rule.id == id).cloned().ok_or_else(|| AppError::new("script_export_rule_missing", "Selected script rule is unavailable.", true))?;
+        if !matches!(rule.action, ProxyRuleAction::ScriptHook { .. }) {
+            return Err(AppError::new("script_export_rule_invalid", "Select only JavaScript hook rules.", true));
+        }
+        crate::proxy_rule_commands::validate_proxy_rule(&rule, &state, false)?;
+        rule.enabled = false;
+        rules.push(PortableProxyRule { rule, map_local_file_omitted: false, action_omitted: false });
+    }
+    Ok(PortableWorkspaceBundle { bundle_version: PORTABLE_BUNDLE_VERSION, exported_at: now_epoch_millis()?,
+        sessions: vec![], collections: vec![], saved_requests: vec![], environments: vec![], environment_variables: vec![],
+        proxy_rules: rules, network_profiles: vec![], websocket_messages: vec![] })
+}
+
 pub fn export_workspace_to_download(
     state: State<'_, AppState>,
 ) -> Result<WorkspaceExportResult, AppError> {
@@ -470,7 +490,7 @@ pub async fn import_workspace(
     } else {
         None
     };
-    if !matches!(bundle.bundle_version, 2 | 3 | 4 | 5 | PORTABLE_BUNDLE_VERSION) {
+    if !matches!(bundle.bundle_version, 2 | 3 | 4 | 5 | 6 | PORTABLE_BUNDLE_VERSION) {
         return Err(AppError::new(
             "unsupported_bundle_version",
             format!(
@@ -762,6 +782,10 @@ fn validate_bundle_network_profiles(bundle: &PortableWorkspaceBundle, mode: &Imp
 }
 
 fn validate_bundle_rules(bundle: &PortableWorkspaceBundle, mode: &ImportMode, state: &State<'_, AppState>) -> Result<Vec<ProxyRule>, AppError> {
+    if bundle.bundle_version < 7 && bundle.proxy_rules.iter().any(|rule| matches!(rule.rule.action, core_model::proxy_rules::ProxyRuleAction::ScriptHook { .. })) {
+        return Err(AppError::new("bundle_scripts_invalid", "Script hooks require bundle version 7.", true));
+    }
+
     if bundle.proxy_rules.len() > 1_000 || (bundle.bundle_version < 4 && !bundle.proxy_rules.is_empty()) {
         return Err(AppError::new("bundle_proxy_rules_invalid", "Bundle contains unsupported or too many proxy rules.", true));
     }
@@ -1032,7 +1056,7 @@ mod tests {
                 offline: false, failure_percent: 1.0, created_at: "1".into(), updated_at: "2".into() };
             state.database.upsert_network_profile(&profile).unwrap();
             let bundle = export_workspace(State(&state)).unwrap();
-            assert_eq!(bundle.bundle_version, 6);
+            assert_eq!(bundle.bundle_version, 7);
             assert_eq!(bundle.network_profiles, vec![profile.clone()]);
             let mut invalid = bundle.clone(); invalid.network_profiles[0].latency_ms = 10_001;
             assert_eq!(import_workspace(invalid, ImportMode::Replace, State(&state)).await.unwrap_err().code, "bundle_network_profiles_invalid");
@@ -1542,4 +1566,28 @@ mod tests {
             fs::remove_dir_all(data_dir).unwrap();
         });
     }
+    #[test]
+    fn selected_script_roundtrip_requires_review_and_old_bundles_cannot_smuggle_hooks() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let data_dir = std::env::temp_dir().join(format!("mas-script-bundle-{}-{}", std::process::id(), now_epoch_millis().unwrap()));
+            let state = crate::initialize_state(data_dir.clone(), crate::resolve_addon_path().unwrap()).unwrap();
+            let rule = ProxyRule { schema_version: PROXY_RULE_SCHEMA_VERSION, id: "script-a".into(), name: "Local hook".into(), enabled: true, priority: 0,
+                matcher: ProxyRuleMatcher { method: None, host: RulePattern { kind: RulePatternKind::Wildcard, value: "*".into() }, path: RulePattern { kind: RulePatternKind::Wildcard, value: "*".into() } },
+                action: ProxyRuleAction::ScriptHook { stage: "request".into(), script: "function transform(e) { e.headers.push({name:'X-Test',value:'literal'}); return e; }".into() }, created_at: "1".into(), updated_at: "1".into() };
+            crate::proxy_rule_commands::upsert_proxy_rule(rule.clone(), State(&state)).unwrap();
+            let ordinary = export_workspace(State(&state)).unwrap();
+            assert!(ordinary.proxy_rules[0].action_omitted);
+            assert!(!serde_json::to_string(&ordinary).unwrap().contains("function transform"));
+            let selected = export_selected_script_rules(vec![rule.id.clone()], State(&state)).unwrap();
+            assert_eq!(selected.proxy_rules[0].rule.action, rule.action);
+            assert!(!selected.proxy_rules[0].rule.enabled);
+            let mut old = selected.clone(); old.bundle_version = 6;
+            assert_eq!(import_workspace(old, ImportMode::Merge, State(&state)).await.unwrap_err().code, "bundle_scripts_invalid");
+            assert!(state.database.list_proxy_rules().unwrap()[0].enabled);
+            import_workspace(selected, ImportMode::Merge, State(&state)).await.unwrap();
+            assert!(!state.database.list_proxy_rules().unwrap()[0].enabled);
+            drop(state); fs::remove_dir_all(data_dir).unwrap();
+        });
+    }
+
 }

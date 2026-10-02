@@ -10,18 +10,21 @@ use std::{
 
 use app_core::CoreService;
 use axum::{
+    Json, Router,
     body::Body,
     extract::{DefaultBodyLimit, State},
-    http::{header, HeaderMap, HeaderValue, Request, StatusCode},
+    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{any, get, post},
-    Json, Router,
 };
 use core_model::AppError;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower_http::services::{ServeDir, ServeFile};
+
+#[cfg(unix)]
+mod control_socket;
 
 #[derive(Clone)]
 struct ServerState {
@@ -269,7 +272,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener =
         tokio::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).await?;
     let _data_lock = lock_data_dir(&data_dir)?;
+    #[cfg(unix)]
+    let control_socket_path = data_dir.join("control/socket");
     let core = CoreService::start(data_dir)?;
+    #[cfg(unix)]
+    let control_socket = control_socket::start(core.clone(), control_socket_path).await?;
     let state = ServerState {
         core: core.clone(),
         token: random_token()?.into(),
@@ -341,6 +348,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .await?;
+    #[cfg(unix)]
+    control_socket.shutdown().await;
     if let Err(error) = core.shutdown().await {
         return Err(format!("Shutdown recovery failed: {}", error.message).into());
     }
@@ -396,9 +405,11 @@ mod tests {
         secure_headers(&mut response);
         assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(response.headers()[header::X_FRAME_OPTIONS], "DENY");
-        assert!(response.headers()[header::CONTENT_SECURITY_POLICY]
-            .to_str()
-            .unwrap()
-            .contains("frame-ancestors 'none'"));
+        assert!(
+            response.headers()[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap()
+                .contains("frame-ancestors 'none'")
+        );
     }
 }

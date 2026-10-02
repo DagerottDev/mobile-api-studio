@@ -345,6 +345,13 @@ def _record_breakpoint_changes(flow: http.HTTPFlow, rule: dict, stage: str, deci
         _record_change(flow, rule, f"header:{str(row.get('name') or '')[:64]}", "prior value redacted", "set")
 
 
+def _replace_body(message, body: bytes) -> None:
+    # Changed payloads are unencoded bytes; let mitmproxy set their wire length.
+    message.headers.pop("content-encoding", None)
+    message.headers.pop("transfer-encoding", None)
+    message.content = body
+
+
 def _rewrite(message, action: dict, flow: http.HTTPFlow, rule: dict) -> None:
     for mutation in action.get("headers") or []:
         name = str(mutation["name"]).strip()
@@ -364,9 +371,7 @@ def _rewrite(message, action: dict, flow: http.HTTPFlow, rule: dict) -> None:
         if len(body) > MAX_BODY_BYTES:
             raise ValueError("Rewrite body exceeds capture limit")
         before_size = len(message.raw_content or b"")
-        message.raw_content = body
-        message.headers.pop("content-length", None)
-        message.headers.pop("content-encoding", None)
+        _replace_body(message, body)
         _record_change(flow, rule, "bodyBytes", before_size, len(body))
 
 
@@ -586,19 +591,15 @@ def _replace_headers(headers, rows: list[dict] | None) -> None:
 
 def _apply_decision_body(message, decision: dict) -> None:
     if decision.get("clearBody", False):
-        message.raw_content = b""
-        message.headers.pop("content-length", None)
-        message.headers.pop("content-encoding", None)
+        _replace_body(message, b"")
         return
     body = decision.get("body")
     if body is None:
         return
-    message.raw_content = _decode_breakpoint_body(body)
+    _replace_body(message, _decode_breakpoint_body(body))
     content_type = body.get("contentType")
     if content_type:
         message.headers["content-type"] = str(content_type)
-    message.headers.pop("content-length", None)
-    message.headers.pop("content-encoding", None)
 
 
 def _apply_request_breakpoint_decision(flow: http.HTTPFlow, decision: dict | None, strict: bool = False) -> bool:
@@ -673,6 +674,89 @@ async def dns_request(flow: dns.DNSFlow) -> None:
         flow.response = flow.request.fail(dns.response_codes.SERVFAIL)
 
 
+
+_SCRIPT_SLOTS = asyncio.Semaphore(4)
+
+async def _script_action(flow, item, stage, message=None):
+    worker = os.environ.get("MAS_SCRIPT_WORKER")
+    if not worker:
+        raise ValueError("Script worker is unavailable; build and install the worker alongside the local service")
+    target = flow.response if stage == "response" else flow.request
+    raw = message.content if message is not None else (target.raw_content or b"")
+    if len(raw) > MAX_BODY_BYTES:
+        raise ValueError("Script body exceeds the supported limit")
+    event = {"stage": stage, "method": flow.request.method, "url": flow.request.url,
+        "headers": [] if message is not None else _headers(target.headers),
+        "body": {"dataBase64": base64.b64encode(raw).decode("ascii"),
+            "contentType": None if message is not None else target.headers.get("content-type"),
+            "isTruncated": False}}
+    if stage == "response": event["statusCode"] = target.status_code
+    if message is not None:
+        event.update(opcode=int(message.type), fromClient=message.from_client, dropped=message.dropped)
+    payload = json.dumps({"script": item["action"]["script"], "event": event}, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(json.dumps(event, ensure_ascii=False).encode()) > 2 * 1024 * 1024 or len(payload) > 3 * 1024 * 1024:
+        raise ValueError("Script event exceeds the 2 MiB worker input limit")
+    async with _SCRIPT_SLOTS:
+        process = await asyncio.create_subprocess_exec(worker, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env={}, cwd="/")
+        async def exchange():
+            process.stdin.write(payload)
+            await process.stdin.drain()
+            process.stdin.close()
+            result = bytearray()
+            while True:
+                chunk = await process.stdout.read(65536)
+                if not chunk: break
+                result.extend(chunk)
+                if len(result) > 2 * 1024 * 1024 + 1: raise ValueError("Script output exceeded its limit")
+            await process.wait()
+            if process.returncode != 0: raise ValueError("Script worker failed")
+            return json.loads(result)
+        try:
+            output = await asyncio.wait_for(exchange(), 1)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+    if not isinstance(output, dict) or "error" in output or output.get("stage") != stage or set(output) - set(event):
+        raise ValueError("Script failed or returned an invalid event")
+    if message is not None:
+        if any(output.get(key) != event[key] for key in ("method", "url", "opcode", "fromClient", "headers")) or type(output.get("dropped")) is not bool:
+            raise ValueError("Script changed read-only WebSocket metadata")
+        content = _decode_breakpoint_body(output.get("body"))
+        if content is None: raise ValueError("Script must return a complete WebSocket body")
+        if int(message.type) == 1: content.decode("utf-8")
+        message.content = content
+        if output["dropped"]: message.drop()
+    else:
+        decision = {key: value for key, value in output.items() if key in ("method", "url", "headers", "body", "statusCode")}
+        decision["action"] = "continue"
+        _validate_breakpoint_decision(decision)
+        if output.get("body") == event["body"]: decision.pop("body", None)
+        if stage == "response":
+            if output.get("method") != event["method"] or output.get("url") != event["url"]:
+                raise ValueError("Response scripts cannot rewrite request identity")
+            _apply_response_breakpoint_decision(flow, decision, strict=True)
+        else: _apply_request_breakpoint_decision(flow, decision, strict=True)
+    _record_proxy_rule(flow, item)
+    _record_change(flow, item, "script:" + stage, "local event", "transformed")
+
+async def _script_or_stop(flow, item, stage, message=None):
+    try:
+        key = "mas_script_budget_" + stage
+        budget = flow.metadata.setdefault(key, {"count": 0, "deadline": time.monotonic() + 2})
+        budget["count"] += 1
+        remaining = budget["deadline"] - time.monotonic()
+        if budget["count"] > 16 or remaining <= 0:
+            raise ValueError("Script stage exceeds sixteen hooks or its two-second deadline")
+        await asyncio.wait_for(_script_action(flow, item, stage, message), remaining)
+        return True
+    except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError, asyncio.TimeoutError, BrokenPipeError):
+        if message is not None: message.drop()
+        _emit({"type": "proxy_rules_failed", "code": "script_hook_failed", "message": "Script hook failed; matching flow stopped.", "rule_id": item.get("id")})
+        _network_error(flow, "script_hook_failed", "Script hook failed; matching flow stopped.")
+        return False
+
 async def _request_rules(flow: http.HTTPFlow) -> None:
     _capture_sdk_request_id(flow)
     tls_rule = _TLS_POLICIES.get(flow.client_conn, {}).get("rule")
@@ -687,14 +771,16 @@ async def _request_rules(flow: http.HTTPFlow) -> None:
         return
     original_identity = (flow.request.method, flow.request.url, flow.request.pretty_host)
     try:
-        supported = {"allow", "block", "map_local", "map_remote", "rewrite_request", "rewrite_response", "breakpoint", "no_cache", "block_cookies"}
+        supported = {"allow", "block", "map_local", "map_remote", "rewrite_request", "rewrite_response", "breakpoint", "no_cache", "block_cookies", "script_hook"}
         for item in proxy_rules:
             if item["action"].get("type") not in supported:
                 raise ValueError(f"Rule action {item['action'].get('type')} is not yet supported")
         for item in proxy_rules:
             action = item.get("action") or {}
             kind = action.get("type")
-            if kind == "rewrite_request":
+            if kind == "script_hook" and action.get("stage") == "request":
+                if not await _script_or_stop(flow, item, "request"): return
+            elif kind == "rewrite_request":
                 _rewrite(flow.request, action, flow, item)
                 _record_proxy_rule(flow, item)
             elif kind == "no_cache":
@@ -718,7 +804,7 @@ async def _request_rules(flow: http.HTTPFlow) -> None:
         if (flow.request.method, flow.request.url, flow.request.pretty_host) != original_identity:
             # Re-match the edited request once; request mutations must not run twice.
             proxy_rules = await _proxy_rules(flow)
-        flow.metadata["mas_response_proxy_rules"] = [item for item in proxy_rules if item.get("action", {}).get("type") in ("rewrite_response", "breakpoint", "no_cache", "block_cookies")]
+        flow.metadata["mas_response_proxy_rules"] = [item for item in proxy_rules if item.get("action", {}).get("type") in ("rewrite_response", "breakpoint", "no_cache", "block_cookies", "script_hook")]
         rule = _matching_rule(flow)
         if _apply_terminal_rule(flow, proxy_rules, rule):
             return
@@ -738,7 +824,7 @@ async def _request_rules(flow: http.HTTPFlow) -> None:
         if (flow.request.method, flow.request.url, flow.request.pretty_host) != before_identity:
             try:
                 rematched = await _proxy_rules(flow)
-                flow.metadata["mas_response_proxy_rules"] = [item for item in rematched if item.get("action", {}).get("type") in ("rewrite_response", "breakpoint", "no_cache", "block_cookies")]
+                flow.metadata["mas_response_proxy_rules"] = [item for item in rematched if item.get("action", {}).get("type") in ("rewrite_response", "breakpoint", "no_cache", "block_cookies", "script_hook")]
                 if _apply_terminal_rule(flow, rematched, rule):
                     return
             except (OSError, ValueError, KeyError, TypeError, UnicodeDecodeError, asyncio.TimeoutError, asyncio.LimitOverrunError) as exc:
@@ -858,11 +944,9 @@ def _apply_json_mutations(flow: http.HTTPFlow, mutations: list[dict]) -> None:
         document = json.loads(raw.decode("utf-8"))
         for mutation in mutations:
             _set_json_pointer(document, str(mutation.get("pointer") or ""), mutation.get("value"), bool(mutation.get("remove", False)))
-        flow.response.raw_content = json.dumps(document, separators=(",", ":")).encode("utf-8")
+        _replace_body(flow.response, json.dumps(document, separators=(",", ":")).encode("utf-8"))
         if not flow.response.headers.get("content-type"):
             flow.response.headers["content-type"] = "application/json"
-        flow.response.headers.pop("content-length", None)
-        flow.response.headers.pop("content-encoding", None)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError, KeyError, IndexError) as exc:
         _emit({"type": "mock_rules_failed", "code": "mock_json_mutation_failed", "message": str(exc), "rule_id": flow.metadata.get("mas_mock_rule_id")})
 
@@ -870,12 +954,10 @@ def _apply_json_mutations(flow: http.HTTPFlow, mutations: list[dict]) -> None:
 def _apply_body_override(response: http.Response, override: dict) -> None:
     encoding = override.get("encoding", "text")
     data = override.get("data", "")
-    response.raw_content = base64.b64decode(data) if encoding == "base64" else str(data).encode("utf-8")
+    _replace_body(response, base64.b64decode(data) if encoding == "base64" else str(data).encode("utf-8"))
     content_type = override.get("contentType")
     if content_type:
         response.headers["content-type"] = content_type
-    response.headers.pop("content-length", None)
-    response.headers.pop("content-encoding", None)
 
 
 def _apply_header_mutations(response: http.Response, mutations: list[dict]) -> None:
@@ -924,7 +1006,9 @@ async def response(flow: http.HTTPFlow) -> None:
     try:
         for item in flow.metadata.get("mas_response_proxy_rules", []):
             action = item["action"]
-            if action["type"] == "rewrite_response":
+            if action["type"] == "script_hook" and action.get("stage") == "response":
+                if not await _script_or_stop(flow, item, "response"): return
+            elif action["type"] == "rewrite_response":
                 _rewrite(response, action, flow, item)
                 _record_proxy_rule(flow, item)
             elif action["type"] == "no_cache":
@@ -1017,11 +1101,19 @@ async def response(flow: http.HTTPFlow) -> None:
     })
 
 
-def websocket_message(flow: http.HTTPFlow) -> None:
+async def websocket_message(flow: http.HTTPFlow) -> None:
     ws = flow.websocket
     if ws is None or not ws.messages:
         return
     message = ws.messages[-1]
+    flow.metadata.pop("mas_script_budget_websocket", None)
+    try:
+        for item in await _proxy_rules(flow):
+            if item.get("action", {}).get("type") == "script_hook" and item["action"].get("stage") == "websocket":
+                if not await _script_or_stop(flow, item, "websocket", message): return
+    except (OSError, ValueError, UnicodeDecodeError, asyncio.TimeoutError, asyncio.LimitOverrunError):
+        _network_error(flow, "script_hook_failed", "WebSocket rule lookup failed; matching flow stopped.")
+        return
     sequence = int(flow.metadata.get("mas_websocket_sequence", 0)) + 1
     flow.metadata["mas_websocket_sequence"] = sequence
     opcode = int(message.type)

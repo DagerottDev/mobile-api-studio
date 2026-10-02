@@ -14,6 +14,7 @@ export function ProxyRulesView() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [scriptExport, setScriptExport] = useState("");
   const [diagnostics, setDiagnostics] = useState<{ code: string; message: string }[]>([]);
 
   const refresh = useCallback(async () => {
@@ -47,7 +48,7 @@ export function ProxyRulesView() {
     return () => window.clearInterval(timer);
   }, []);
   const selected = useMemo(() => rules.find((rule) => rule.id === selectedId) ?? null, [rules, selectedId]);
-  useEffect(() => { setDraft(selected ? structuredClone(selected) : null); setPreviewMatched(null); }, [selected]);
+  useEffect(() => { setDraft(selected ? structuredClone(selected) : null); setPreviewMatched(null); setScriptExport(""); }, [selected]);
 
   const combined = [
     ...rules.map((rule) => ({ id: rule.id, name: rule.name, priority: rule.priority, createdAt: rule.createdAt, kind: "proxy" as const, enabled: rule.enabled })),
@@ -103,6 +104,18 @@ export function ProxyRulesView() {
     } catch (value) { setError(formatError(value)); setPreviewMatched(null); }
   }
 
+  async function previewScriptExport() {
+    if (!draft) return;
+    setBusy(true); setScriptExport("");
+    try { const bundle = await invoke("export_selected_script_rules", { ids: [draft.id] }); setScriptExport(JSON.stringify(bundle, null, 2)); setError(null); }
+    catch (value) { setError(formatError(value)); }
+    finally { setBusy(false); }
+  }
+  function downloadScriptExport() {
+    const url = URL.createObjectURL(new Blob([scriptExport], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = "mobile-api-studio-scripts.mas.json"; link.click(); URL.revokeObjectURL(url);
+  }
+
   function patchPattern(field: "host" | "path", patch: Partial<RulePattern>) {
     setDraft((current) => current ? { ...current, matcher: { ...current.matcher, [field]: { ...current.matcher[field], ...patch } } } : null);
     setPreviewMatched(null);
@@ -113,6 +126,7 @@ export function ProxyRulesView() {
       : type === "map_local" ? { type, path: "" }
       : type === "map_remote" ? { type, url: "" }
       : type === "rewrite_request" || type === "rewrite_response" ? { type, headers: [], body: null }
+      : type === "script_hook" ? { type, stage: "request", script: "function transform(event) { return event; }" }
       : type === "breakpoint" ? { type, stage: "request" }
       : type === "dns_override" ? { type, address: "" }
       : type === "inspect_https" ? { type, enabled: false }
@@ -188,7 +202,7 @@ export function ProxyRulesView() {
           <label className="field-label">Match type<select value={draft.matcher[field].kind} disabled={field === "path" && (draft.action.type === "dns_override" || draft.action.type === "inspect_https")} onChange={(event) => patchPattern(field, { kind: event.target.value as PatternKind })}><option value="exact">Exact</option><option value="wildcard">Wildcard</option><option value="regex">Regex</option></select></label>
         </div>)}</section>
         <section className="mock-section"><h3>Action</h3><div className="mock-grid two-column">
-          <label className="field-label">Behavior<select value={draft.action.type} onChange={(event) => setAction(event.target.value as ProxyRuleAction["type"])}><option value="block">Block</option><option value="allow">Allow</option><option value="map_local">Map local file</option><option value="map_remote">Map remote URL</option><option value="rewrite_request">Rewrite request</option><option value="rewrite_response">Rewrite response</option><option value="breakpoint">Breakpoint</option><option value="no_cache">No cache</option><option value="block_cookies">Block cookies</option><option value="dns_override">DNS override</option><option value="inspect_https">HTTPS inspection</option></select></label>
+          <label className="field-label">Behavior<select value={draft.action.type} onChange={(event) => setAction(event.target.value as ProxyRuleAction["type"])}><option value="block">Block</option><option value="allow">Allow</option><option value="map_local">Map local file</option><option value="map_remote">Map remote URL</option><option value="rewrite_request">Rewrite request</option><option value="rewrite_response">Rewrite response</option><option value="breakpoint">Breakpoint</option><option value="script_hook">JavaScript hook</option><option value="no_cache">No cache</option><option value="block_cookies">Block cookies</option><option value="dns_override">DNS override</option><option value="inspect_https">HTTPS inspection</option></select></label>
           {draft.action.type === "block" ? <label className="field-label">Status<input className="text-input" type="number" min="400" max="599" step="1" value={draft.action.statusCode} onChange={(event) => setDraft({ ...draft, action: { type: "block", statusCode: Number(event.target.value) } })} /></label> : null}
           {draft.action.type === "map_local" ? <label className="field-label">Filename in proxy-maps<input className="text-input" value={draft.action.path} onChange={(event) => setDraft({ ...draft, action: { type: "map_local", path: event.target.value } })} /></label> : null}
           {draft.action.type === "map_remote" ? <label className="field-label">Remote URL<input className="text-input" type="url" value={draft.action.url} onChange={(event) => setDraft({ ...draft, action: { type: "map_remote", url: event.target.value } })} /></label> : null}
@@ -196,6 +210,7 @@ export function ProxyRulesView() {
           {draft.action.type === "dns_override" ? <label className="field-label">IP address<input className="text-input" value={draft.action.address} onChange={(event) => setDraft({ ...draft, action: { type: "dns_override", address: event.target.value } })} placeholder="127.0.0.1 or ::1" /></label> : null}
           {draft.action.type === "inspect_https" ? <label className="field-label">Connection policy<select value={String(draft.action.enabled)} onChange={(event) => setDraft({ ...draft, action: { type: "inspect_https", enabled: event.target.value === "true" } })}><option value="false">Pass encrypted traffic through</option><option value="true">Inspect HTTPS</option></select></label> : null}
         </div>
+        {draft.action.type === "script_hook" ? <><label className="field-label">Hook stage<select value={draft.action.stage} onChange={(event) => { if (draft.action.type === "script_hook") setDraft({ ...draft, action: { ...draft.action, stage: event.target.value as "request" | "response" | "websocket" } }); }}><option value="request">Request</option><option value="response">Response</option><option value="websocket">WebSocket message</option></select></label><label className="field-label">JavaScript (64 KiB max)<textarea className="replay-body-editor" value={draft.action.script} onChange={(event) => { if (draft.action.type === "script_hook") setDraft({ ...draft, action: { ...draft.action, script: event.target.value } }); }} /></label><p>Define synchronous transform(event), return the edited event. Runs in a disposable QuickJS worker: 32 MiB heap and 100 ms engine limit, no host APIs. Failure stops the matching flow. Imported rules stay disabled. Exported source can contain secrets you typed; review it before downloading. Import script bundles through Settings.</p><button className="secondary compact" disabled={busy || draft.id === newRuleId} onClick={() => void previewScriptExport()}>Preview stored script export</button>{scriptExport ? <><textarea className="replay-body-editor" readOnly value={scriptExport} aria-label="Selected script export preview" /><button className="secondary compact" disabled={busy} onClick={downloadScriptExport}>Download previewed script bundle</button></> : null}</> : null}
         {draft.action.type === "inspect_https" ? <p className="muted-copy">First matching host rule decides before TLS. Applies to new connections; reconnect clients after changes. Encrypted TCP passthrough produces no HTTP details. UDP/QUIC passthrough is unavailable and stops with a diagnostic.</p> : null}
         {draft.action.type === "dns_override" ? <p className="muted-copy">Applies only to A/AAAA queries sent to the DNS listener. Start that listener from Connect and configure your development client to use it.</p> : null}
         {draft.action.type === "map_local" ? <><label className="field-label">Import local file (2 MiB max)<input type="file" disabled={busy} onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void importLocalFile(file); }} /></label><p className="muted-copy">Choose a file to copy it into the app configuration directory’s proxy-maps folder, or enter an existing filename above.</p></> : null}

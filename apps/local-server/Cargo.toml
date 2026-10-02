@@ -9,6 +9,7 @@ license.workspace = true
 app-core = { path = "../../crates/app-core" }
 axum = "0.8.9"
 core-model = { path = "../../crates/core-model" }
+libc = "0.2"
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["io-util", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }

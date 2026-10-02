@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "apps/desktop/src-tauri",
   "apps/local-server",
+  "apps/script-worker",
   "crates/app-core",
   "crates/core-model",
   "crates/capture-core",

@@ -211,6 +211,12 @@ impl CaptureEngine for MitmDumpEngine {
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
+        if let Ok(executable) = std::env::current_exe() {
+            if let Some(directory) = executable.parent() {
+                let worker = directory.join(if cfg!(windows) { "mobile-api-studio-script-worker.exe" } else { "mobile-api-studio-script-worker" });
+                if worker.is_file() { command.env("MAS_SCRIPT_WORKER", worker); }
+            }
+        }
         if let Some(path) = &self.rule_socket_path {
             command.env("MAS_RULE_SOCKET", path);
         }

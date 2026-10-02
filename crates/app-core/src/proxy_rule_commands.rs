@@ -99,6 +99,11 @@ pub(crate) fn validate_proxy_rule(rule: &ProxyRule, state: &State<'_, AppState>,
         return Err(AppError::new("proxy_rule_metadata_invalid", "Rule ID or timestamp is invalid.", true));
     }
     match &rule.action {
+        ProxyRuleAction::ScriptHook { stage, script } => {
+            if !matches!(stage.as_str(), "request" | "response" | "websocket") || script.is_empty() || script.len() > 64 * 1024 {
+                return Err(AppError::new("script_hook_invalid", "Choose request, response or websocket and a script of 1–65536 bytes.", true));
+            }
+        },
         ProxyRuleAction::Allow => {},
         ProxyRuleAction::Block { status_code } if (400..=599).contains(status_code) => {},
         ProxyRuleAction::Block { .. } => return Err(AppError::new("proxy_rule_status_invalid", "Block status must be 400–599.", true)),

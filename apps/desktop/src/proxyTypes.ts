@@ -2,6 +2,7 @@ export type PatternKind = "exact" | "wildcard" | "regex";
 export interface RulePattern { kind: PatternKind; value: string }
 export interface RuleHeaderMutation { name: string; value: string | null; remove: boolean }
 export type ProxyRuleAction =
+  | { type: "script_hook"; stage: "request" | "response" | "websocket"; script: string }
   | { type: "allow" }
   | { type: "block"; statusCode: number }
   | { type: "map_local"; path: string }

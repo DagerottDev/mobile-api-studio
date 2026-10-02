@@ -1054,7 +1054,7 @@ fn spawn_capture_ingestion(database: Database, body_store: BodyStore, engine: Ar
             match receiver.recv().await {
                 Ok(event) => {
                     if let capture_core::CaptureEvent::EngineFailed { code, .. } = &event {
-                        if code.starts_with("proxy_rule") {
+                        if code.starts_with("proxy_rule") || code == "script_hook_failed" {
                             let safe_code = code.chars().filter(|character| character.is_ascii_alphanumeric() || *character == '_').take(80).collect::<String>();
                             if let Ok(mut queue) = diagnostics.lock() {
                                 queue.push_back(ProxyRuleDiagnostic { code: safe_code, message: "Proxy rule execution failed; the affected flow was stopped.".into() });
