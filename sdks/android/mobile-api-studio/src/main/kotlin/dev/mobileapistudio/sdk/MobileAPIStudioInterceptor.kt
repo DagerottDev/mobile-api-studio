@@ -38,6 +38,7 @@ public class MobileAPIStudioInterceptor(
         } catch (throwable: Throwable) {
             MobileAPIStudio.complete(
                 requestId = instrumented.requestId,
+                statusCode = null,
                 error = throwable,
             )
             throw throwable

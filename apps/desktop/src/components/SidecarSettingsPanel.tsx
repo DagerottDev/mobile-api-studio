@@ -78,6 +78,7 @@ export function SidecarSettingsPanel() {
       <div className="settings-actions">
         <input
           className="text-input"
+          aria-label="Capture executable path or command"
           style={{ flex: "1 1 420px" }}
           value={value}
           onChange={(event) => setValue(event.target.value)}

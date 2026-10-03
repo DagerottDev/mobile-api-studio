@@ -50,7 +50,7 @@ export function BodyViewer({ title, bodyRef, payload }: { title: string; bodyRef
   const formatted = parseText === null ? null : formatText(parseText, mime, bodyRef.contentType ?? "", !bodyRef.isBinary);
   const canFormat = raster || formatted !== null || protocol;
   const activeDecode = decoded?.sha256 === bodyRef.sha256 ? decoded.result : null;
-  const raw = bodyRef.isBinary ? (base64 ? `Base64\n${base64}` : "Binary body unavailable") : text ?? (base64 ? `Base64\n${base64}` : "Loading body…");
+  const raw = bodyRef.isBinary ? (base64 !== null ? (base64 ? `Base64\n${base64}` : "Empty binary body.") : "Binary body unavailable") : text ?? (base64 ? `Base64\n${base64}` : "Loading body…");
 
   async function loadDescriptor(file: File | null) {
     if (!file) return;

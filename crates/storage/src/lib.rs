@@ -256,10 +256,10 @@ impl Database {
             WHERE id IN (
                 SELECT f.session_id
                 FROM flows f
-                JOIN headers h ON h.flow_id = f.id
-                WHERE h.side = 'request'
-                  AND h.name = ?1 COLLATE NOCASE
-                  AND h.value = ?2
+                JOIN flow_details d ON d.flow_id = f.id
+                JOIN json_each(d.detail_json, '$.request.headers') h
+                WHERE json_extract(h.value, '$.name') = ?1 COLLATE NOCASE
+                  AND json_extract(h.value, '$.value') = ?2
                   AND f.session_id IS NOT NULL
                 ORDER BY f.started_at DESC
                 LIMIT 1
@@ -549,6 +549,46 @@ mod capture_metadata_migration_tests {
     use core_model::{
         CaptureMode, CaptureModeKind, CaptureTarget, CaptureTargetKind, SCHEMA_VERSION,
     };
+
+    #[test]
+    fn request_header_attributes_latest_session_from_stored_flow_detail() {
+        let root = std::env::temp_dir().join(format!(
+            "mas-session-attribution-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let database = Database::open(root.join("app.db")).unwrap();
+        let header = "X-Mobile-API-Studio-Request-Id";
+        for (id, started_at) in [("old", "1"), ("new", "2")] {
+            let session: CaptureSession = serde_json::from_value(serde_json::json!({
+                "schemaVersion": SCHEMA_VERSION, "id": id, "name": id,
+                "status": "completed", "startedAt": started_at,
+            })).unwrap();
+            database.create_session(&session).unwrap();
+            let mut summary = FlowSummary::fixture(id, "GET", "example.test", "/", 200, 1, 0, started_at);
+            summary.session_id = Some(id.into());
+            let detail: core_model::FlowDetail = serde_json::from_value(serde_json::json!({
+                "summary": summary,
+                "request": {
+                    "method": "GET", "url": "https://example.test/", "scheme": "https",
+                    "host": "example.test", "path": "/",
+                    "headers": [{ "name": "x-MOBILE-api-STUDIO-request-ID", "value": "Request-Id", "sensitive": false }],
+                },
+                "timing": {},
+            })).unwrap();
+            database.upsert_flow_detail(&detail).unwrap();
+        }
+        assert_eq!(database.attribute_session_from_request_header(header, "request-id", "sample.app").unwrap(), 0);
+        assert_eq!(database.attribute_session_from_request_header("Other-Header", "Request-Id", "sample.app").unwrap(), 0);
+        assert_eq!(database.attribute_session_from_request_header(header, "Request-Id", "sample.app").unwrap(), 1);
+        let sessions = database.list_sessions(10).unwrap();
+        assert_eq!(sessions[0].id, "new");
+        assert_eq!(sessions[0].app_id.as_deref(), Some("sample.app"));
+        assert_eq!(sessions[1].app_id, None);
+        assert_eq!(database.attribute_session_from_request_header(header, "Request-Id", "other.app").unwrap(), 0);
+        assert_eq!(database.list_sessions(10).unwrap(), sessions);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn old_sessions_survive_capture_metadata_migration() {

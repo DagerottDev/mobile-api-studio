@@ -49,7 +49,9 @@ pub struct CaptureTarget {
 pub enum CaptureTargetKind {
     IosSimulator { device_id: String },
     AndroidEmulator { device_id: String },
+    #[serde(alias = "desktop_all")]
     MacAll,
+    #[serde(alias = "desktop_process")]
     MacProcess { pid: u32, name: String },
     PhysicalIos { address: String, interface: String },
     PhysicalAndroid { address: String, interface: String },
@@ -504,6 +506,7 @@ pub struct EnvironmentVariable {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TrafficSearchQuery {
+    pub sdk_text: Option<String>,
     pub text: Option<String>,
     pub session_id: Option<String>,
     pub source: Option<FlowSource>,

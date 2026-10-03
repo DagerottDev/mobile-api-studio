@@ -1,11 +1,12 @@
 const SERVICE_NAME: &str = "dev.mobileapistudio.environment";
+const PROBE_REFERENCE: &str = "__availability_probe__";
 
 #[derive(Debug, Clone, Default)]
 pub struct SecretStore;
 
 impl SecretStore {
     pub fn is_available(&self) -> bool {
-        cfg!(target_os = "macos")
+        platform::is_available()
     }
 
     pub fn set(&self, reference: &str, secret: &str) -> Result<(), SecretStoreError> {
@@ -28,10 +29,11 @@ pub struct SecretStoreError {
 }
 
 impl SecretStoreError {
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     fn unsupported() -> Self {
         Self {
             code: "secure_store_unsupported".into(),
-            message: "Native secure environment-variable storage is currently implemented for macOS.".into(),
+            message: "Native secure environment-variable storage is implemented for macOS, Windows, and Linux.".into(),
         }
     }
 
@@ -51,15 +53,20 @@ impl std::fmt::Display for SecretStoreError {
 
 impl std::error::Error for SecretStoreError {}
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 mod platform {
-    use super::{SecretStoreError, SERVICE_NAME};
+    use super::{PROBE_REFERENCE, SERVICE_NAME, SecretStoreError};
     use keyring::{Entry, Error};
 
+    pub fn is_available() -> bool {
+        entry(PROBE_REFERENCE)
+            .is_ok_and(|entry| matches!(entry.get_password(), Ok(_) | Err(Error::NoEntry)))
+    }
+
     pub fn set(reference: &str, secret: &str) -> Result<(), SecretStoreError> {
-        entry(reference)?
-            .set_password(secret)
-            .map_err(|error| SecretStoreError::platform("secure_store_write_failed", error.to_string()))
+        entry(reference)?.set_password(secret).map_err(|error| {
+            SecretStoreError::platform("secure_store_write_failed", error.to_string())
+        })
     }
 
     pub fn get(reference: &str) -> Result<Option<String>, SecretStoreError> {
@@ -90,9 +97,13 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 mod platform {
     use super::SecretStoreError;
+
+    pub fn is_available() -> bool {
+        false
+    }
 
     pub fn set(_reference: &str, _secret: &str) -> Result<(), SecretStoreError> {
         Err(SecretStoreError::unsupported())

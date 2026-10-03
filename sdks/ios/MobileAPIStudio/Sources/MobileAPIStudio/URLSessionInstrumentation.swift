@@ -62,6 +62,9 @@ public final class MobileAPIStudioURLProtocol: URLProtocol, @unchecked Sendable 
     }
 
     public override func stopLoading() {
+        if let requestID {
+            MobileAPIStudio.complete(requestID: requestID, error: URLError(.cancelled))
+        }
         dataTask?.cancel()
         dataTask = nil
     }

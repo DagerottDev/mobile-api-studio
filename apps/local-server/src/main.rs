@@ -1,10 +1,7 @@
 use std::{
     env,
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
     net::{Ipv4Addr, SocketAddrV4},
     path::PathBuf,
-    process::Command,
     sync::Arc,
 };
 
@@ -23,8 +20,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tower_http::services::{ServeDir, ServeFile};
 
+#[cfg(windows)]
+mod control_pipe;
+mod control_protocol;
 #[cfg(unix)]
 mod control_socket;
+mod platform;
 
 #[derive(Clone)]
 struct ServerState {
@@ -137,8 +138,7 @@ fn valid_token(headers: &HeaderMap, token: &str) -> bool {
 
 fn random_token() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
-    File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
+    getrandom::fill(&mut bytes)
         .map_err(|error| format!("Cannot create a local session token: {error}"))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
@@ -146,10 +146,7 @@ fn random_token() -> Result<String, String> {
 fn arguments() -> Result<(u16, bool, PathBuf), String> {
     let mut port = 8180;
     let mut open_browser = true;
-    let mut data_dir = env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("HOME is required")?
-        .join("Library/Application Support/dev.mobileapistudio.desktop");
+    let mut data_dir = platform::default_data_dir()?;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -179,110 +176,27 @@ fn arguments() -> Result<(u16, bool, PathBuf), String> {
     Ok((port, open_browser, data_dir))
 }
 
-struct DataLock {
-    path: PathBuf,
-}
-
-impl Drop for DataLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-fn lock_data_dir(data_dir: &PathBuf) -> Result<DataLock, String> {
-    fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
-    for process_name in ["mobile-api-studio", "Mobile API Studio"] {
-        match Command::new("pgrep").arg("-x").arg(process_name).output() {
-            Ok(result) if result.status.success() => {
-                return Err(
-                    "Close the historical Mobile API Studio app before starting the local service."
-                        .into(),
-                );
-            }
-            Ok(result) if result.status.code() == Some(1) => {}
-            Ok(result) => {
-                return Err(format!(
-                    "Cannot check whether the old app is running (pgrep status {}).",
-                    result.status
-                ));
-            }
-            Err(error) => {
-                return Err(format!(
-                    "Cannot check whether the old app is running: {error}"
-                ));
-            }
-        }
-    }
-    let database = data_dir.join("app.db");
-    if database.exists() {
-        let output = Command::new("lsof")
-            .arg("-t")
-            .arg(&database)
-            .output()
-            .map_err(|error| {
-                format!(
-                    "Cannot check whether {} is in use: {error}",
-                    database.display()
-                )
-            })?;
-        if output.status.success() && !output.stdout.is_empty() {
-            return Err(format!(
-                "{} is in use. Close the other process before starting the local service.",
-                database.display()
-            ));
-        }
-        if !output.status.success() && output.status.code() != Some(1) {
-            return Err(format!(
-                "Cannot check whether {} is in use (lsof status {}).",
-                database.display(),
-                output.status
-            ));
-        }
-    }
-    let path = data_dir.join("local-server.lock");
-    if let Ok(pid) = fs::read_to_string(&path) {
-        if let Ok(pid) = pid.trim().parse::<u32>() {
-            if Command::new("kill")
-                .arg("-0")
-                .arg(pid.to_string())
-                .output()
-                .is_ok_and(|result| result.status.success())
-            {
-                return Err(format!(
-                    "Another local service is using {} (process {pid}).",
-                    data_dir.display()
-                ));
-            }
-        }
-        fs::remove_file(&path)
-            .map_err(|error| format!("Cannot clear stale lock {}: {error}", path.display()))?;
-    }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|error| format!("Cannot lock {}: {error}", data_dir.display()))?;
-    write!(file, "{}", std::process::id()).map_err(|error| error.to_string())?;
-    Ok(DataLock { path })
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (port, open_browser, data_dir) = arguments()?;
     let listener =
         tokio::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)).await?;
-    let _data_lock = lock_data_dir(&data_dir)?;
+    let _data_lock = platform::lock_data_dir(&data_dir)?;
     #[cfg(unix)]
     let control_socket_path = data_dir.join("control/socket");
     let core = CoreService::start(data_dir)?;
     #[cfg(unix)]
     let control_socket = control_socket::start(core.clone(), control_socket_path).await?;
+    #[cfg(windows)]
+    let control_pipe = control_pipe::start(control_protocol::make_dispatch(core.clone())).await?;
     let state = ServerState {
         core: core.clone(),
         token: random_token()?.into(),
         authority: format!("127.0.0.1:{port}").into(),
     };
-    let dist = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../desktop/dist");
+    let dist = env::var_os("MAS_UI_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../desktop/dist"));
     if !dist.join("index.html").is_file() {
         return Err(format!(
             "UI missing at {}. Run npm run build in apps/desktop first.",
@@ -328,7 +242,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let url = format!("http://127.0.0.1:{port}");
     println!("Mobile API Studio: {url}");
     if open_browser {
-        let _ = Command::new("open").arg(&url).spawn();
+        let _ = platform::open_browser(&url);
     }
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -350,6 +264,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     #[cfg(unix)]
     control_socket.shutdown().await;
+    #[cfg(windows)]
+    control_pipe.shutdown().await;
     if let Err(error) = core.shutdown().await {
         return Err(format!("Shutdown recovery failed: {}", error.message).into());
     }

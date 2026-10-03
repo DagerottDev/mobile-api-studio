@@ -11,6 +11,7 @@ ai-storage = { path = "../ai-storage" }
 base64.workspace = true
 chrono = "0.4.45"
 futures-util = "0.3"
+getrandom = "0.4"
 capture-core = { path = "../capture-core" }
 capture-mitm = { path = "../capture-mitm" }
 compare-core = { path = "../compare-core" }

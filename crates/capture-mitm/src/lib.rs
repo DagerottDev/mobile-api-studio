@@ -28,6 +28,22 @@ const EVENT_PREFIX: &str = "MAS_EVENT ";
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_PROTOCOL_TEXT: usize = 1024;
 
+#[cfg(windows)]
+#[derive(Clone)]
+struct RuleLoopback {
+    port: u16,
+    token: String,
+}
+#[cfg(windows)]
+impl std::fmt::Debug for RuleLoopback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuleLoopback")
+            .field("port", &self.port)
+            .field("token", &"[redacted]")
+            .finish()
+    }
+}
+
 fn mode_spec(mode: &CaptureModeKind) -> String {
     match mode {
         CaptureModeKind::RegularProxy => "regular".into(),
@@ -46,6 +62,8 @@ pub struct MitmDumpEngine {
     addon_path: PathBuf,
     conf_dir: PathBuf,
     rule_socket_path: Option<PathBuf>,
+    #[cfg(windows)]
+    rule_loopback: Option<RuleLoopback>,
     sender: broadcast::Sender<CaptureEvent>,
     children: Arc<Mutex<HashMap<String, Child>>>,
 }
@@ -58,6 +76,8 @@ impl MitmDumpEngine {
             addon_path: addon_path.into(),
             conf_dir: conf_dir.into(),
             rule_socket_path: None,
+            #[cfg(windows)]
+            rule_loopback: None,
             sender,
             children: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -70,6 +90,12 @@ impl MitmDumpEngine {
 
     pub fn with_rule_socket(mut self, path: impl Into<PathBuf>) -> Self {
         self.rule_socket_path = Some(path.into());
+        self
+    }
+
+    #[cfg(windows)]
+    pub fn with_rule_loopback(mut self, port: u16, token: String) -> Self {
+        self.rule_loopback = Some(RuleLoopback { port, token });
         self
     }
 
@@ -207,18 +233,34 @@ impl CaptureEngine for MitmDumpEngine {
             .arg("-s")
             .arg(&self.addon_path)
             .env("MAS_SESSION_ID", &config.session_id)
+            .env("MAS_SERVICE_PID", std::process::id().to_string())
+            .env_remove("MAS_RULE_SOCKET")
+            .env_remove("MAS_RULE_TCP_PORT")
+            .env_remove("MAS_RULE_TCP_TOKEN")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
 
         if let Ok(executable) = std::env::current_exe() {
             if let Some(directory) = executable.parent() {
-                let worker = directory.join(if cfg!(windows) { "mobile-api-studio-script-worker.exe" } else { "mobile-api-studio-script-worker" });
-                if worker.is_file() { command.env("MAS_SCRIPT_WORKER", worker); }
+                let worker = directory.join(if cfg!(windows) {
+                    "mobile-api-studio-script-worker.exe"
+                } else {
+                    "mobile-api-studio-script-worker"
+                });
+                if worker.is_file() {
+                    command.env("MAS_SCRIPT_WORKER", worker);
+                }
             }
         }
         if let Some(path) = &self.rule_socket_path {
             command.env("MAS_RULE_SOCKET", path);
+        }
+        #[cfg(windows)]
+        if let Some(endpoint) = &self.rule_loopback {
+            command
+                .env("MAS_RULE_TCP_PORT", endpoint.port.to_string())
+                .env("MAS_RULE_TCP_TOKEN", &endpoint.token);
         }
 
         let mode = mode_spec(&config.mode.kind);
@@ -377,6 +419,7 @@ enum BridgeEvent {
         proxy_rule_changes: Vec<core_model::ProxyRuleChange>,
         protocol: Option<ProtocolDetails>,
     },
+    #[serde(rename = "websocket_message")]
     WebSocketMessage {
         id: String,
         flow_id: String,
@@ -389,6 +432,7 @@ enum BridgeEvent {
         injected: bool,
         body: Option<BridgeBody>,
     },
+    #[serde(rename = "websocket_closed")]
     WebSocketClosed {
         flow_id: String,
         close_code: Option<u16>,
@@ -581,16 +625,40 @@ fn publish_bridge_event(
             }
         }
         BridgeEvent::FlowFailed {
-            id, request, started_at,
+            id,
+            request,
+            started_at,
             code,
             message,
             mock_rule_id: _,
             mock_rule_name: _,
         } => {
             if let Some(request) = request {
-                let response = BridgeResponse { status_code: 599, reason: None, headers: vec![], body: None };
-                let timing = BridgeTiming { request_ms: None, server_ms: None, download_ms: None, total_ms: None };
-                if let Ok(mut flow) = normalize_captured_flow(session_id, id.clone(), started_at.unwrap_or_else(|| "0".into()), None, request, response, timing, false, vec![], vec![], None) {
+                let response = BridgeResponse {
+                    status_code: 599,
+                    reason: None,
+                    headers: vec![],
+                    body: None,
+                };
+                let timing = BridgeTiming {
+                    request_ms: None,
+                    server_ms: None,
+                    download_ms: None,
+                    total_ms: None,
+                };
+                if let Ok(mut flow) = normalize_captured_flow(
+                    session_id,
+                    id.clone(),
+                    started_at.unwrap_or_else(|| "0".into()),
+                    None,
+                    request,
+                    response,
+                    timing,
+                    false,
+                    vec![],
+                    vec![],
+                    None,
+                ) {
                     flow.summary.status_code = None;
                     flow.response = None;
                     flow.error_code = Some(code.clone());
@@ -824,6 +892,23 @@ fn now_epoch_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn websocket_addon_events_reach_capture_subscribers() {
+        let (sender, mut receiver) = broadcast::channel(4);
+        let message = serde_json::from_str::<BridgeEvent>(r#"{"type":"websocket_message","id":"flow:1","flow_id":"flow","session_id":"check","sequence":1,"from_client":true,"opcode":1,"timestamp":"1","dropped":false,"injected":false,"body":{"data_base64":"aGk=","content_type":"text/plain","encoding":null,"is_binary":false,"is_truncated":false}}"#).unwrap();
+        publish_bridge_event(&sender, "check", message);
+        match receiver.try_recv().unwrap() {
+            CaptureEvent::WebSocketMessage(message) => {
+                assert_eq!(message.flow_id, "flow");
+                assert_eq!(message.body.unwrap().bytes, b"hi");
+            }
+            other => panic!("Expected WebSocket message, got {other:?}"),
+        }
+        let closed = serde_json::from_str::<BridgeEvent>(r#"{"type":"websocket_closed","flow_id":"flow","close_code":1000,"close_reason":"complete","closed_by_client":true}"#).unwrap();
+        publish_bridge_event(&sender, "check", closed);
+        assert!(matches!(receiver.try_recv().unwrap(), CaptureEvent::WebSocketClosed { close_code: Some(1000), closed_by_client: Some(true), .. }));
+    }
 
     #[test]
     #[cfg(unix)]

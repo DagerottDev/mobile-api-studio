@@ -85,7 +85,7 @@ let session = URLSession(configuration: config)
 
 This installs the SDK's opt-in `URLProtocol`. When the SDK is disabled the configuration is returned unchanged.
 
-The protocol forwards requests with its own ephemeral `URLSession`. It does not inherit custom settings from the original session, including a per-session proxy. If your client needs custom session or network settings, use the manual request instrumentation below and call `complete` when the client finishes. The Simulator's system-wide proxy path for automatic integration still needs device validation.
+The protocol forwards requests with its own ephemeral `URLSession`. It does not inherit custom settings from the original session, including a per-session proxy. If your client needs custom session or network settings, use the manual request instrumentation below and call `complete` when the client finishes. Automatic instrumentation passed on the iOS Simulator through an explicit reverse HTTP endpoint, including cancellation/refusal terminal events and runtime disablement. A Simulator check confirmed that automatic instrumentation loses a custom per-session proxy and records the resulting DNS failure. Default Simulator routing through the regular proxy remains unverified; see [the platform acceptance record](PLATFORM_ACCEPTANCE.md).
 
 ### Manual/custom networking integration
 
@@ -129,7 +129,13 @@ The Android library lives at:
 sdks/android/mobile-api-studio
 ```
 
-The repository Android SDK workspace includes the `:mobile-api-studio` library and `:sample` application modules.
+The repository Android SDK workspace includes the `:mobile-api-studio` library and `:sample` application modules. Its AGP 9.3.1 build requires JDK 21, Gradle 9.5 or newer, Android API 37 and Build Tools 36.0.0. With those installed and `ANDROID_HOME` pointing to the SDK:
+
+```sh
+gradle --project-dir sdks/android assembleDebug
+```
+
+No Gradle wrapper is committed.
 
 Configure the SDK from your app using a debug/internal-build condition:
 
@@ -143,6 +149,8 @@ MobileAPIStudio.configure(
 ```
 
 The Android configuration defaults to `enabled = false`, so the library is a pass-through unless the app explicitly opts in. `MobileAPIStudio.disable()` can turn it off at runtime.
+
+Apps targeting Android 17/API 37 or higher must declare `android.permission.ACCESS_LOCAL_NETWORK` and obtain its runtime grant before enabling the SDK or contacting the desktop proxy. Check the permission again before local requests and keep the SDK disabled on denial/revocation. The SDK does not request app permissions; the sample uses native Activity permission APIs. Apps targeting API 36 or lower should not request this permission. See [Android local-network guidance](https://developer.android.com/privacy-and-security/local-network-permission).
 
 ### Add app context
 
@@ -194,7 +202,7 @@ try {
     val status = customClient.execute()
     requestId?.let { MobileAPIStudio.complete(it, statusCode = status) }
 } catch (error: Throwable) {
-    requestId?.let { MobileAPIStudio.complete(it, error = error) }
+    requestId?.let { MobileAPIStudio.complete(it, statusCode = null, error = error) }
     throw error
 }
 ```
@@ -209,7 +217,7 @@ The runnable sample module is:
 sdks/android/sample
 ```
 
-It enables the SDK only when the application is debuggable, trusts user-installed CAs for the development capture scenario, and sends a sample OkHttp request through the SDK interceptor.
+It enables the SDK only when the application is debuggable and local-network access is permitted, trusts user-installed CAs for the development capture scenario, and sends a sample OkHttp request through the SDK interceptor.
 
 ## Desktop workflow
 
@@ -256,3 +264,7 @@ If the app does not appear under **SDK**:
 6. check the SDK screen for the expected handshake.
 
 If the SDK client appears but a proxy flow says **proxy-only**, confirm the request is going through the URLSession integration, OkHttp interceptor, or manual correlation API, and that the request itself is captured by the proxy.
+
+## Network-profile attribution timing
+
+Automatic instrumentation sends start telemetry separately from the forwarded app request. It does not wait for server ingestion. App profiles require an already persisted event linked to a unique registered app; a matching correlation header and later Inspector context do not establish that identity at initial selection. A broader profile can therefore apply to an automatic request. Simulator selected-profile diagnostics observed global 1800 alongside app 600 requests, while a manual-SDK acceptance fixture used a persisted-event acknowledgment before dispatch. This fixture is not a new SDK guarantee or a reason to block real requests on telemetry. See [PLATFORM_ACCEPTANCE.md](PLATFORM_ACCEPTANCE.md) for timing failures and scope.

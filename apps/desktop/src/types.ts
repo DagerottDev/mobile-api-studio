@@ -8,8 +8,8 @@ export type ImportMode = "merge" | "replace";
 
 export type CaptureTarget =
   | { schemaVersion: number; type: "ios_simulator" | "android_emulator"; deviceId: string }
-  | { schemaVersion: number; type: "mac_all" }
-  | { schemaVersion: number; type: "mac_process"; pid: number; name: string }
+  | { schemaVersion: number; type: "mac_all" | "desktop_all" }
+  | { schemaVersion: number; type: "mac_process" | "desktop_process"; pid: number; name: string }
   | { schemaVersion: number; type: "physical_ios" | "physical_android"; address: string; interface: string }
   | { schemaVersion: number; type: "proxy_listener"; mode: ListenerMode; listenPort: number };
 
@@ -248,6 +248,7 @@ export interface NormalizedEndpoint {
 }
 
 export interface TrafficSearchQuery {
+  sdkText?: string | null;
   text: string | null;
   sessionId: string | null;
   source: FlowSource | null;

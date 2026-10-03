@@ -12,7 +12,6 @@ mod protocol_commands;
 mod search_index;
 pub use inspect::ingest_capture_event as ingest_capture_event_for_storage;
 pub use protocol_commands::{inspect_bytes as inspect_protocol_bytes, ProtocolInspection};
-#[cfg(unix)]
 mod rule_server;
 mod replay_commands;
 mod sdk_commands;
@@ -21,6 +20,7 @@ mod sidecar_commands;
 mod sharing_transport;
 mod sharing_commands;
 mod workspace_commands;
+mod desktop_discovery;
 
 use ai_storage::AiDatabase;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -40,10 +40,8 @@ use std::collections::VecDeque;
 use std::ops::Deref;
 use std::{
     fs,
-    io::Read,
     net::{IpAddr, Ipv4Addr},
     path::{Path, PathBuf},
-    process::Command,
     sync::{Arc, Mutex as StdMutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -84,7 +82,8 @@ struct AppState {
     proxy_rule_diagnostics: Arc<StdMutex<VecDeque<ProxyRuleDiagnostic>>>,
     #[cfg(unix)]
     rule_socket_path: PathBuf,
-    #[cfg(unix)]
+    #[cfg(windows)]
+    rule_loopback_listener: StdMutex<Option<rule_server::LoopbackListener>>,
     rule_server_task: StdMutex<Option<JoinHandle<()>>>,
 }
 
@@ -173,32 +172,35 @@ fn list_devices() -> DeviceDiscoveryPayload {
     let mut devices = Vec::new();
     let mut diagnostics = Vec::new();
 
-    let ios_provider = IosDeviceProvider;
-    if ios_provider.is_available() {
-        match ios_provider.list_devices() {
-            Ok(mut discovered) => devices.append(&mut discovered),
-            Err(error) => diagnostics.push(ConnectionDiagnostic {
-                code: error.code,
-                title: "iOS Simulator discovery failed".into(),
-                message: error.message,
-                recoverable: error.recoverable,
+    #[cfg(target_os = "macos")]
+    {
+        let ios_provider = IosDeviceProvider;
+        if ios_provider.is_available() {
+            match ios_provider.list_devices() {
+                Ok(mut discovered) => devices.append(&mut discovered),
+                Err(error) => diagnostics.push(ConnectionDiagnostic {
+                    code: error.code,
+                    title: "iOS Simulator discovery failed".into(),
+                    message: error.message,
+                    recoverable: error.recoverable,
+                    suggested_action: Some(
+                        "Open Xcode and ensure Command Line Tools and Simulator runtimes are installed."
+                            .into(),
+                    ),
+                }),
+            }
+        } else {
+            diagnostics.push(ConnectionDiagnostic {
+                code: "ios_tool_unavailable".into(),
+                title: "iOS tools unavailable".into(),
+                message: "xcrun/simctl could not be found on this machine.".into(),
+                recoverable: true,
                 suggested_action: Some(
-                    "Open Xcode and ensure Command Line Tools and Simulator runtimes are installed."
+                    "Install Xcode and select its Command Line Tools before connecting an iOS Simulator."
                         .into(),
                 ),
-            }),
+            });
         }
-    } else {
-        diagnostics.push(ConnectionDiagnostic {
-            code: "ios_tool_unavailable".into(),
-            title: "iOS tools unavailable".into(),
-            message: "xcrun/simctl could not be found on this machine.".into(),
-            recoverable: true,
-            suggested_action: Some(
-                "Install Xcode and select its Command Line Tools before connecting an iOS Simulator."
-                    .into(),
-            ),
-        });
     }
 
     let android_provider = AndroidDeviceProvider;
@@ -236,74 +238,22 @@ fn list_devices() -> DeviceDiscoveryPayload {
 }
 
 fn list_mac_processes() -> Result<Vec<MacProcess>, AppError> {
-    if !cfg!(target_os = "macos") {
-        return Ok(Vec::new());
-    }
-    let output = Command::new("ps")
-        .args(["-x", "-o", "pid=", "-o", "comm="])
-        .output()
-        .map_err(|error| AppError::new("process_discovery_failed", error.to_string(), true))?;
-    if !output.status.success() {
-        return Err(AppError::new(
-            "process_discovery_failed",
-            String::from_utf8_lossy(&output.stderr),
-            true,
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.trim().splitn(2, char::is_whitespace);
-            let pid = parts.next()?.parse::<u32>().ok()?;
-            let command = parts.next()?.trim();
-            let name = Path::new(command).file_name()?.to_str()?.to_owned();
-            (pid > 0 && !name.is_empty()).then_some(MacProcess { pid, name })
-        })
-        .take(1_024)
-        .collect())
+    if cfg!(target_os = "macos") { desktop_discovery::processes() } else { Ok(Vec::new()) }
 }
+fn list_desktop_processes() -> Result<Vec<MacProcess>, AppError> { desktop_discovery::processes() }
+fn list_lan_interfaces() -> Result<Vec<LanInterface>, AppError> { desktop_discovery::interfaces() }
 
-fn list_lan_interfaces() -> Result<Vec<LanInterface>, AppError> {
-    if !cfg!(target_os = "macos") {
-        return Ok(Vec::new());
-    }
-    let output = Command::new("ifconfig")
-        .arg("-l")
-        .output()
-        .map_err(|error| AppError::new("interface_discovery_failed", error.to_string(), true))?;
-    if !output.status.success() {
-        return Err(AppError::new(
-            "interface_discovery_failed",
-            String::from_utf8_lossy(&output.stderr),
-            true,
-        ));
-    }
-    let mut interfaces = Vec::new();
-    for name in String::from_utf8_lossy(&output.stdout).split_whitespace() {
-        if name == "lo0" {
-            continue;
-        }
-        let Ok(address) = Command::new("ipconfig").args(["getifaddr", name]).output() else {
-            continue;
-        };
-        if !address.status.success() {
-            continue;
-        }
-        let address = String::from_utf8_lossy(&address.stdout).trim().to_owned();
-        if address.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_private()) {
-            interfaces.push(LanInterface {
-                name: name.to_owned(),
-                address,
-            });
-        }
-    }
-    Ok(interfaces)
+fn capture_platform_info() -> serde_json::Value {
+    serde_json::json!({"os": std::env::consts::OS, "iosSimulator": cfg!(target_os = "macos"),
+        "localCapture": cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")),
+        "guidance": if cfg!(target_os = "linux") { "Linux local capture needs kernel 6.8+, outbound traffic, and permission to load mitmproxy's eBPF helper. WSL is unsupported; run from a terminal for any native privilege prompt." }
+        else if cfg!(target_os = "windows") { "Windows local capture may require native administrator permission. Trust the development CA only for the clients you control." }
+        else { "macOS may prompt for local capture permission. Local capture observes outbound traffic." }})
 }
 
 fn new_pairing_token() -> Result<String, AppError> {
     let mut bytes = [0_u8; 32];
-    fs::File::open("/dev/urandom")
-        .and_then(|mut source| source.read_exact(&mut bytes))
+    getrandom::fill(&mut bytes)
         .map_err(|error| AppError::new("pairing_token_failed", error.to_string(), true))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
@@ -402,10 +352,10 @@ async fn connect_capture_target(
         }
         _ => {}
     }
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(target_os = "macos", target_os = "windows", target_os = "linux")) {
         return Err(AppError::new(
             "unsupported_capture_platform",
-            "This capture target currently requires macOS.",
+            "Capture targets require macOS, Windows, or Linux.",
             true,
         ));
     }
@@ -431,9 +381,9 @@ async fn connect_capture_target(
         _ => DEFAULT_CAPTURE_PORT,
     };
     let (mode, strategy, paired_ip, interface_ip) = match &target.kind {
-        CaptureTargetKind::MacAll => (CaptureModeKind::LocalAll, "mac_local_all", None, None),
+        CaptureTargetKind::MacAll => (CaptureModeKind::LocalAll, "desktop_local_all", None, None),
         CaptureTargetKind::MacProcess { pid, name } => {
-            let exists = list_mac_processes()?
+            let exists = list_desktop_processes()?
                 .iter()
                 .any(|process| process.pid == *pid && process.name == *name);
             if !exists {
@@ -445,7 +395,7 @@ async fn connect_capture_target(
             }
             (
                 CaptureModeKind::LocalProcess { pid: *pid },
-                "mac_local_process",
+                "desktop_local_process",
                 None,
                 None,
             )
@@ -592,11 +542,11 @@ async fn connect_capture_target(
             });
         } else {
             diagnostics.push(ConnectionDiagnostic {
-                code: "mac_local_capture_trust".into(),
+                code: "desktop_local_capture_trust".into(),
                 title: "Trust the development CA for HTTPS".into(),
-                message: format!("Local capture is active. For HTTPS inspection, trust the certificate at {} for this development Mac.", certificate.as_ref().expect("non-DNS capture has a certificate").display()),
+                message: format!("Local capture is active. For HTTPS inspection, trust the certificate at {} for this development computer.", certificate.as_ref().expect("non-DNS capture has a certificate").display()),
                 recoverable: true,
-                suggested_action: Some("macOS may prompt for local capture permission. Certificate-pinned apps need their own debug configuration.".into()),
+                suggested_action: Some("Native capture may require OS permission. Linux requires kernel 6.8+ and an authorized eBPF helper; WSL is unsupported. Certificate-pinned apps need their own debug configuration.".into()),
             });
         }
         let snapshot = connection_snapshot(&active);
@@ -654,6 +604,9 @@ async fn connect_device(
     let session_id = format!("session-{timestamp}");
     let is_android = device_id.starts_with("android:");
     let is_ios = device_id.starts_with("ios:");
+    if is_ios && !cfg!(target_os = "macos") {
+        return Err(AppError::new("unsupported_ios_platform", "iOS Simulator capture requires macOS and Xcode.", true));
+    }
     if !is_android && !is_ios {
         return Err(AppError::new(
             "unsupported_device",
@@ -1084,10 +1037,14 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
     let capture_executable = sidecar_commands::configured_capture_executable(&database)?;
     #[cfg(unix)]
     let rule_socket_path = rule_server::socket_path()?;
+    #[cfg(windows)]
+    let rule_loopback_listener = rule_server::loopback_listener()?;
     let mut capture_engine = MitmDumpEngine::new(addon_path, app_data_dir.join("mitmproxy"))
         .with_executable(capture_executable);
     #[cfg(unix)]
     { capture_engine = capture_engine.with_rule_socket(&rule_socket_path); }
+    #[cfg(windows)]
+    { capture_engine = capture_engine.with_rule_loopback(rule_loopback_listener.port, rule_loopback_listener.token.clone()); }
     let capture_engine = Arc::new(capture_engine);
     Ok(AppState {
         database,
@@ -1101,14 +1058,15 @@ fn initialize_state(app_data_dir: PathBuf, addon_path: PathBuf) -> Result<AppSta
         proxy_rule_diagnostics: Arc::new(StdMutex::new(VecDeque::new())),
         #[cfg(unix)]
         rule_socket_path,
-        #[cfg(unix)]
+        #[cfg(windows)]
+        rule_loopback_listener: StdMutex::new(Some(rule_loopback_listener)),
         rule_server_task: StdMutex::new(None),
     })
 }
 
 fn resolve_addon_path() -> Result<PathBuf, String> {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecars/mitm-addon/mas_bridge.py");
+    let path = std::env::var_os("MAS_ADDON_PATH").map(PathBuf::from).unwrap_or_else(||
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../sidecars/mitm-addon/mas_bridge.py"));
     if path.is_file() {
         Ok(path)
     } else {
@@ -1166,6 +1124,12 @@ impl CoreService {
             let task = rule_server::start(state.database.clone(), &state.rule_socket_path)?;
             *state.rule_server_task.lock().map_err(|error| error.to_string())? = Some(task);
         }
+        #[cfg(windows)]
+        {
+            let listener = state.rule_loopback_listener.lock().map_err(|_| "Rule transport unavailable")?.take().ok_or("Rule transport already started")?;
+            let task = rule_server::start_loopback(state.database.clone(), listener)?;
+            *state.rule_server_task.lock().map_err(|_| "Rule transport unavailable")? = Some(task);
+        }
         spawn_capture_ingestion(
             state.database.clone(),
             state.body_store.clone(),
@@ -1189,11 +1153,11 @@ impl CoreService {
 
     pub async fn shutdown(&self) -> Result<(), AppError> {
         let result = disconnect_device(State(&self.state)).await.map(|_| ());
+        if let Ok(mut guard) = self.state.rule_server_task.lock() {
+            if let Some(task) = guard.take() { task.abort(); }
+        }
         #[cfg(unix)]
         {
-            if let Ok(mut guard) = self.state.rule_server_task.lock() {
-                if let Some(task) = guard.take() { task.abort(); }
-            }
             let _ = fs::remove_file(&self.state.rule_socket_path);
             if let Some(directory) = self.state.rule_socket_path.parent() { let _ = fs::remove_dir(directory); }
         }

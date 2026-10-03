@@ -74,24 +74,18 @@ export function TrafficView({ onOpenConnect }: { onOpenConnect: () => void }) {
     if (!silent) setLoading(true);
     try {
       const sdkNeedle = sdkMetadataFilter.trim();
-      const [baseResults, sdkFlowIds] = await Promise.all([
-        invoke<TrafficSearchResult[]>("search_traffic", {
-          query: {
-            text: textFilter.trim() || null,
-            sessionId: sessionFilter === "all" ? null : sessionFilter,
-            source: sourceFilter === "all" ? null : sourceFilter,
-            method: methodFilter === "all" ? null : methodFilter,
-            statusClass: statusFilter === "all" ? null : Number(statusFilter[0]),
-            endpointKey: null,
-            limit: 1500,
-          },
-        }),
-        sdkNeedle
-          ? invoke<string[]>("sdk_flow_ids_matching", { text: sdkNeedle, limit: 1500 })
-          : Promise.resolve<string[] | null>(null),
-      ]);
-      const sdkSet = sdkFlowIds ? new Set(sdkFlowIds) : null;
-      const nextResults = sdkSet ? baseResults.filter((item) => sdkSet.has(item.flow.id)) : baseResults;
+      const nextResults = await invoke<TrafficSearchResult[]>("search_traffic", {
+        query: {
+          text: textFilter.trim() || null,
+          sdkText: sdkNeedle || null,
+          sessionId: sessionFilter === "all" ? null : sessionFilter,
+          source: sourceFilter === "all" ? null : sourceFilter,
+          method: methodFilter === "all" ? null : methodFilter,
+          statusClass: statusFilter === "all" ? null : Number(statusFilter[0]),
+          endpointKey: null,
+          limit: 1500,
+        },
+      });
       setResults(nextResults);
       setSelectedFlowId((current) => {
         if (current && nextResults.some((item) => item.flow.id === current)) return current;

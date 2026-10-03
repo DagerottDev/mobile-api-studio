@@ -188,29 +188,118 @@ impl Database {
         &self,
         query: &TrafficSearchQuery,
     ) -> Result<Vec<TrafficSearchResult>, StorageError> {
-        let limit = query.limit.unwrap_or(500).clamp(1, 5_000);
+        self.search_flows_with_limit(query, query.limit.unwrap_or(500).clamp(1, 5_000))
+    }
+
+    pub fn sdk_flow_ids_matching(
+        &self,
+        text: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, StorageError> {
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let query = TrafficSearchQuery {
+            sdk_text: Some(text.into()),
+            ..Default::default()
+        };
+        Ok(self
+            .search_flows_with_limit(&query, limit.clamp(1, 10_000))?
+            .into_iter()
+            .map(|result| result.flow.id)
+            .collect())
+    }
+
+    fn search_flows_with_limit(
+        &self,
+        query: &TrafficSearchQuery,
+        limit: usize,
+    ) -> Result<Vec<TrafficSearchResult>, StorageError> {
+        let sdk_needle = query
+            .sdk_text
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        let connection = self.connection()?;
+        if sdk_needle.is_some() && !connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='sdk_events')", [], |row| row.get::<_, bool>(0))? {
+            return Ok(Vec::new());
+        }
         let sessions = self
             .list_sessions(10_000)?
             .into_iter()
             .map(|session| (session.id, session.name))
             .collect::<HashMap<_, _>>();
-        let needle = query.text.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_lowercase);
+        let needle = query
+            .text
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_lowercase);
         if needle.as_ref().is_some_and(|value| value.len() > 256) {
-            return Err(StorageError::InvalidInput("Traffic search text exceeds 256 bytes".into()));
+            return Err(StorageError::InvalidInput(
+                "Traffic search text exceeds 256 bytes".into(),
+            ));
         }
         let derived_matches: HashSet<String> = if let Some(needle) = needle.as_deref() {
             let connection = self.connection()?;
             let mut statement = connection.prepare(
-                "SELECT f.id FROM (SELECT id FROM flows ORDER BY started_at DESC LIMIT 10000) f WHERE EXISTS (SELECT 1 FROM flow_search_text s WHERE s.flow_id=f.id AND instr(lower(s.redacted_text), ?1)>0) OR EXISTS (SELECT 1 FROM websocket_messages w WHERE w.flow_id=f.id AND instr(lower(w.search_text), ?1)>0)",
+                "SELECT f.id FROM flows f WHERE EXISTS (SELECT 1 FROM flow_search_text s WHERE s.flow_id=f.id AND instr(lower(s.redacted_text), ?1)>0) OR EXISTS (SELECT 1 FROM websocket_messages w WHERE w.flow_id=f.id AND instr(lower(w.search_text), ?1)>0)",
             )?;
-            statement.query_map([needle], |row| row.get(0))?.collect::<Result<_, _>>()?
-        } else { HashSet::new() };
-        let method = query.method.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_uppercase);
-        let endpoint_key = query.endpoint_key.as_deref().map(str::trim).filter(|value| !value.is_empty());
+            statement
+                .query_map([needle], |row| row.get(0))?
+                .collect::<Result<_, _>>()?
+        } else {
+            HashSet::new()
+        };
+        let method = query
+            .method
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_uppercase);
+        let endpoint_key = query
+            .endpoint_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
 
         let mut results = Vec::new();
-        // ponytail: scan newest 10,000 flows; use database-wide search if that ceiling matters.
-        for flow in self.list_flows(10_000)? {
+        // Filter SDK metadata before streaming summaries; output limits never hide older matches.
+        // The first case-insensitive correlation header has the same semantics as Inspector enrichment.
+        let sdk_filter = if sdk_needle.is_some() {
+            "WHERE EXISTS (SELECT 1 FROM flow_details d WHERE d.flow_id=f.id AND EXISTS (
+                SELECT 1 FROM sdk_events e WHERE e.request_id=(
+                    SELECT json_extract(h.value, '$.value') FROM json_each(d.detail_json, '$.request.headers') h
+                    WHERE lower(json_extract(h.value, '$.name'))='x-mobile-api-studio-request-id'
+                    ORDER BY CAST(h.key AS INTEGER) LIMIT 1
+                ) AND instr(lower(e.payload_json), lower(?1))>0))"
+        } else {
+            "WHERE ?1 IS NULL"
+        };
+        let mut statement = connection.prepare(&format!(
+            "SELECT f.id, f.schema_version, f.session_id, f.source, f.method, f.host, f.path,
+             f.status_code, f.duration_ms, f.response_size_bytes, f.started_at
+             FROM flows f {sdk_filter} ORDER BY f.started_at DESC"
+        ))?;
+        let rows = statement.query_map([sdk_needle], |row| {
+            let source: String = row.get(3)?;
+            Ok(FlowSummary {
+                id: row.get(0)?,
+                schema_version: row.get::<_, i64>(1)? as u16,
+                session_id: row.get(2)?,
+                source: flow_source_from_str(&source),
+                method: row.get(4)?,
+                host: row.get(5)?,
+                path: row.get(6)?,
+                status_code: row.get::<_, Option<i64>>(7)?.map(|value| value as u16),
+                duration_ms: row.get::<_, Option<i64>>(8)?.map(|value| value as u64),
+                response_size_bytes: row.get::<_, Option<i64>>(9)?.map(|value| value as u64),
+                started_at: row.get(10)?,
+            })
+        })?;
+        for flow in rows {
+            let flow = flow?;
             if let Some(session_id) = query.session_id.as_deref() {
                 if flow.session_id.as_deref() != Some(session_id) {
                     continue;
@@ -594,5 +683,194 @@ impl Database {
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(StorageError::from)
+    }
+}
+
+#[cfg(test)]
+mod traffic_search_tests {
+    use super::*;
+
+    #[test]
+    fn sdk_and_ordinary_filters_find_history_before_output_limits() {
+        let root = std::env::temp_dir().join(format!(
+            "mas-sdk-search-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let database = Database::open(root.join("app.db")).unwrap();
+        // SDK storage is optional in imported workspaces; an SDK filter must simply match nothing.
+        assert!(database
+            .sdk_flow_ids_matching("needle", 10)
+            .unwrap()
+            .is_empty());
+        assert!(database
+            .search_flows(&TrafficSearchQuery::default())
+            .unwrap()
+            .is_empty());
+        assert!(database
+            .search_flows(&TrafficSearchQuery {
+                sdk_text: Some("  ".into()),
+                ..Default::default()
+            })
+            .unwrap()
+            .is_empty());
+        let mut connection = database.connection().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE sdk_events(request_id TEXT, payload_json TEXT);
+            CREATE INDEX idx_sdk_events_request_id ON sdk_events(request_id);",
+            )
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        transaction.execute("INSERT INTO sessions(id,name,started_at) VALUES ('old-session','Historical fixture','0')", []).unwrap();
+        for index in 0..10_020 {
+            transaction.execute("INSERT INTO flows(id,schema_version,source,method,host,path,status_code,started_at)
+                VALUES (?1,1,'proxy',?2,'example.test','/items/42',?3,?4)",
+                params![format!("flow-{index}"), if index == 0 { "GET" } else { "POST" },
+                    if index == 0 { 200 } else { 500 }, format!("{index:08}")]).unwrap();
+        }
+        transaction
+            .execute(
+                "UPDATE flows SET session_id='old-session' WHERE id='flow-0'",
+                [],
+            )
+            .unwrap();
+        for (index, headers) in [
+            (
+                0,
+                serde_json::json!([{"name":"X-MOBILE-api-STUDIO-request-ID","value":"exact"}]),
+            ),
+            (
+                1,
+                serde_json::json!([{"name":"x-mobile-api-studio-request-id","value":"other"}]),
+            ),
+            // Request ID values remain exact, and only the first matching header counts.
+            (
+                2,
+                serde_json::json!([{"name":"X-Mobile-API-Studio-Request-Id","value":"EXACT"}]),
+            ),
+            (
+                3,
+                serde_json::json!([{"name":"X-Mobile-API-Studio-Request-Id","value":"wrong"},
+                {"name":"x-mobile-api-studio-request-id","value":"exact"}]),
+            ),
+        ] {
+            transaction
+                .execute(
+                    "INSERT INTO flow_details(flow_id,detail_json) VALUES (?1,?2)",
+                    params![
+                        format!("flow-{index}"),
+                        serde_json::json!({"request":{"headers":headers}}).to_string()
+                    ],
+                )
+                .unwrap();
+        }
+        transaction
+            .execute(
+                "INSERT INTO sdk_events VALUES ('exact',?1),('other',?1)",
+                [serde_json::json!({"context":{"feature":"literal%_metadata"}}).to_string()],
+            )
+            .unwrap();
+        // Matching newer telemetry without captured request IDs must not consume the output limit.
+        for index in 0..2_100 {
+            transaction
+                .execute(
+                    "INSERT INTO sdk_events VALUES (?1,?2)",
+                    params![format!("uncaptured-{index}"), "literal%_metadata"],
+                )
+                .unwrap();
+        }
+        transaction
+            .execute(
+                "INSERT INTO flow_search_text VALUES ('flow-0','safe body token')",
+                [],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        drop(connection);
+        assert_eq!(
+            database
+                .sdk_flow_ids_matching("LITERAL%_METADATA", 10)
+                .unwrap(),
+            ["flow-1", "flow-0"]
+        );
+        assert_eq!(
+            database
+                .sdk_flow_ids_matching("literal%_metadata", 1)
+                .unwrap(),
+            ["flow-1"]
+        );
+        assert!(database
+            .sdk_flow_ids_matching("literal__metadata", 10)
+            .unwrap()
+            .is_empty());
+        assert!(database.sdk_flow_ids_matching("  ", 10).unwrap().is_empty());
+        let query = TrafficSearchQuery {
+            sdk_text: Some("literal%_metadata".into()),
+            session_id: Some("old-session".into()),
+            method: Some("get".into()),
+            status_class: Some(2),
+            source: Some(FlowSource::Proxy),
+            text: Some("safe body token".into()),
+            endpoint_key: Some(normalize_endpoint("GET", "example.test", "/items/42").key),
+            limit: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(database.search_flows(&query).unwrap()[0].flow.id, "flow-0");
+        assert!(database
+            .search_flows(&TrafficSearchQuery {
+                text: Some("private secret".into()),
+                ..query.clone()
+            })
+            .unwrap()
+            .is_empty());
+        assert!(database
+            .search_flows(&TrafficSearchQuery {
+                session_id: Some("missing".into()),
+                ..query.clone()
+            })
+            .unwrap()
+            .is_empty());
+        assert!(database
+            .search_flows(&TrafficSearchQuery {
+                status_class: Some(4),
+                ..query
+            })
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            database
+                .search_flows(&TrafficSearchQuery {
+                    sdk_text: Some("  ".into()),
+                    limit: Some(1),
+                    ..Default::default()
+                })
+                .unwrap()[0]
+                .flow
+                .id,
+            "flow-10019"
+        );
+        let connection = database.connection().unwrap();
+        connection.execute("DROP TABLE sdk_events", []).unwrap();
+        drop(connection);
+        assert_eq!(
+            database
+                .search_flows(&TrafficSearchQuery {
+                    limit: Some(1),
+                    ..Default::default()
+                })
+                .unwrap()[0]
+                .flow
+                .id,
+            "flow-10019"
+        );
+        assert!(database
+            .sdk_flow_ids_matching("literal%_metadata", 10)
+            .unwrap()
+            .is_empty());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,7 +1,10 @@
 package dev.mobileapistudio.sample
 
+import android.Manifest
 import android.app.Activity
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.widget.Button
@@ -30,20 +33,10 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val debugEnabled = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-        MobileAPIStudio.configure(
-            this,
-            MobileAPIStudioConfiguration(enabled = debugEnabled),
-        )
-        MobileAPIStudio.setContext(
-            screen = "Sample Home",
-            feature = "SDK Demo",
-            attributes = mapOf("platform" to "android"),
-        )
-        MobileAPIStudio.log("Android sample launched", MobileAPIStudioLogLevel.INFO)
+        if (hasLocalNetworkPermission()) configureSdk() else MobileAPIStudio.disable()
 
         status = TextView(this).apply {
-            text = "SDK ${if (MobileAPIStudio.isEnabled) "enabled" else "disabled"}. Tap to make a correlated request."
+            text = sdkStatus()
             textSize = 16f
         }
         val button = Button(this).apply {
@@ -58,9 +51,51 @@ class MainActivity : Activity() {
             addView(button, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
         setContentView(layout)
+        if (!hasLocalNetworkPermission()) requestLocalNetworkPermission()
+    }
+
+    private fun hasLocalNetworkPermission(): Boolean =
+        Build.VERSION.SDK_INT < 37 ||
+            checkSelfPermission(Manifest.permission.ACCESS_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED
+
+    private fun sdkStatus(): String = if (hasLocalNetworkPermission()) {
+        "SDK ${if (MobileAPIStudio.isEnabled) "enabled" else "disabled"}. Tap to make a correlated request."
+    } else {
+        "Local network permission is required for desktop capture. Tap to grant it, or allow Nearby devices in app settings."
+    }
+
+    private fun requestLocalNetworkPermission() {
+        requestPermissions(arrayOf(Manifest.permission.ACCESS_LOCAL_NETWORK), 1)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != 1) return
+        if (hasLocalNetworkPermission()) configureSdk() else MobileAPIStudio.disable()
+        status.text = sdkStatus()
+    }
+
+    private fun configureSdk() {
+        val debugEnabled = applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        MobileAPIStudio.configure(
+            this,
+            MobileAPIStudioConfiguration(enabled = debugEnabled),
+        )
+        MobileAPIStudio.setContext(
+            screen = "Sample Home",
+            feature = "SDK Demo",
+            attributes = mapOf("platform" to "android"),
+        )
+        MobileAPIStudio.log("Android sample launched", MobileAPIStudioLogLevel.INFO)
     }
 
     private fun sendRequest() {
+        if (!hasLocalNetworkPermission()) {
+            MobileAPIStudio.disable()
+            status.text = sdkStatus()
+            requestLocalNetworkPermission()
+            return
+        }
         MobileAPIStudio.setContext(
             screen = "Sample Home",
             feature = "Load Demo API",

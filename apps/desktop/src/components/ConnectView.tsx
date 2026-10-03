@@ -28,10 +28,13 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionSnapshot>(disconnected);
   const [connectionDiagnostics, setConnectionDiagnostics] = useState<ConnectionDiagnostic[]>([]);
+  // Recovery outcomes remain useful after disconnected status refreshes.
+  const [recoveryDiagnostics, setRecoveryDiagnostics] = useState<ConnectionDiagnostic[]>([]);
   const [pairingToken, setPairingToken] = useState<string | null>(null);
   const [pendingRollback, setPendingRollback] = useState<RollbackJournal | null>(null);
   const [doctor, setDoctor] = useState<ConnectionDoctorReport | null>(null);
   const [sessionName, setSessionName] = useState("");
+  const [platform, setPlatform] = useState<{os: string; localCapture: boolean; guidance: string}>({ os: "unknown", localCapture: false, guidance: "Checking native capture support…" });
   const [processes, setProcesses] = useState<MacProcess[]>([]);
   const [selectedProcessPid, setSelectedProcessPid] = useState<number | null>(null);
   const [interfaces, setInterfaces] = useState<LanInterface[]>([]);
@@ -47,20 +50,23 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    const targetErrors: string[] = [];
     try {
-      const [devices, current, rollback, report, discoveredProcesses, discoveredInterfaces] = await Promise.all([
+      const [devices, current, rollback, report, discoveredProcesses, discoveredInterfaces, platformInfo] = await Promise.all([
         invoke<DeviceDiscoveryPayload>("list_devices"),
         invoke<ConnectionSnapshot>("current_connection"),
         invoke<RollbackJournal | null>("pending_rollback"),
         invoke<ConnectionDoctorReport>("connection_doctor"),
-        invoke<MacProcess[]>("list_mac_processes").catch(() => []),
-        invoke<LanInterface[]>("list_lan_interfaces").catch(() => []),
+        invoke<MacProcess[]>("list_desktop_processes").catch((value) => { targetErrors.push(formatInvokeError(value)); return []; }),
+        invoke<LanInterface[]>("list_lan_interfaces").catch((value) => { targetErrors.push(formatInvokeError(value)); return []; }),
+        invoke<{os: string; localCapture: boolean; guidance: string}>("capture_platform_info"),
       ]);
       setPayload(devices);
       setConnection(current);
       setPendingRollback(rollback);
       setDoctor(report);
       setProcesses(discoveredProcesses);
+      setPlatform(platformInfo);
       setSelectedProcessPid((pid) => discoveredProcesses.some((process) => process.pid === pid) ? pid : discoveredProcesses[0]?.pid ?? null);
       setInterfaces(discoveredInterfaces);
       setSelectedInterface((name) => discoveredInterfaces.some((item) => item.name === name) ? name : discoveredInterfaces[0]?.name ?? "");
@@ -73,7 +79,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
         }
         return preferredDevice(devices.devices)?.id ?? null;
       });
-      setError(null);
+      setError(targetErrors.length ? targetErrors.join(" · ") : null);
     } catch (value) {
       setError(formatInvokeError(value));
     } finally {
@@ -99,6 +105,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
 
   async function connect() {
     if (!selected) return;
+    setRecoveryDiagnostics([]);
     setActing(true);
     try {
       const result = await invoke<ConnectDeviceResult>("connect_device", {
@@ -120,6 +127,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
   }
 
   async function connectTarget(target: CaptureTarget) {
+    setRecoveryDiagnostics([]);
     setActing(true);
     try {
       const result = await invoke<ConnectDeviceResult>("connect_capture_target", {
@@ -141,6 +149,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
   }
 
   async function disconnect() {
+    setRecoveryDiagnostics([]);
     setActing(true);
     try {
       const result = await invoke<ConnectionSnapshot>("disconnect_device");
@@ -162,7 +171,8 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
     setActing(true);
     try {
       const diagnostics = await invoke<ConnectionDiagnostic[]>("recover_pending_rollback");
-      setConnectionDiagnostics(diagnostics);
+      setConnectionDiagnostics([]);
+      setRecoveryDiagnostics(diagnostics);
       setPendingRollback(null);
       setError(null);
       await refresh();
@@ -173,7 +183,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
     }
   }
 
-  const allDiagnostics = [...payload.diagnostics, ...connectionDiagnostics];
+  const allDiagnostics = [...payload.diagnostics, ...connectionDiagnostics, ...recoveryDiagnostics];
   const selectedReady = selected ? isReady(selected) : false;
 
   return (
@@ -195,11 +205,11 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
       {connection.connected && connection.captureRunning === false ? <div className="error-banner" role="alert">Capture engine stopped unexpectedly. Disconnect to restore the capture settings, then reconnect.</div> : null}
       <section className="connect-grid" aria-label="Additional capture targets">
         <div className="panel">
-          <div className="panel-heading"><div><strong>Mac capture</strong><span>All traffic or one running process</span></div></div>
+          <div className="panel-heading"><div><strong>Local desktop capture</strong><span>All traffic or one running process</span></div></div>
           <div className="selected-device-detail">
-            <p>mitmproxy local capture needs no Mac system proxy change. macOS may ask for permission.</p>
-            <button className="primary wide" onClick={() => void connectTarget({ schemaVersion: 1, type: "mac_all" })} disabled={acting || loading || connection.connected || Boolean(pendingRollback)}>
-              {acting ? "Starting…" : "Capture this Mac"}
+            <p>{platform.guidance} No system proxy settings are changed.</p>
+            <button className="primary wide" onClick={() => void connectTarget({ schemaVersion: 1, type: "desktop_all" })} disabled={acting || loading || connection.connected || Boolean(pendingRollback) || !platform.localCapture}>
+              {acting ? "Starting…" : "Capture this computer"}
             </button>
             <label className="field-label" htmlFor="mac-process">Running process</label>
             <select className="text-input" id="mac-process" value={selectedProcessPid ?? ""} onChange={(event) => setSelectedProcessPid(Number(event.target.value))} disabled={acting || connection.connected}>
@@ -207,8 +217,8 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
             </select>
             <button className="secondary wide" onClick={() => {
               const process = processes.find((item) => item.pid === selectedProcessPid);
-              if (process) void connectTarget({ schemaVersion: 1, type: "mac_process", pid: process.pid, name: process.name });
-            }} disabled={acting || connection.connected || selectedProcessPid === null || Boolean(pendingRollback)}>
+              if (process) void connectTarget({ schemaVersion: 1, type: "desktop_process", pid: process.pid, name: process.name });
+            }} disabled={acting || connection.connected || selectedProcessPid === null || Boolean(pendingRollback) || !platform.localCapture}>
               Capture selected process
             </button>
           </div>
@@ -220,7 +230,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
             <select className="text-input" id="physical-platform" value={physicalPlatform} onChange={(event) => setPhysicalPlatform(event.target.value as "ios" | "android")} disabled={acting || connection.connected}>
               <option value="ios">iOS</option><option value="android">Android</option>
             </select>
-            <label className="field-label" htmlFor="lan-interface">Mac LAN interface</label>
+            <label className="field-label" htmlFor="lan-interface">Computer LAN interface</label>
             <select className="text-input" id="lan-interface" value={selectedInterface} onChange={(event) => setSelectedInterface(event.target.value)} disabled={acting || connection.connected}>
               {interfaces.length === 0 ? <option value="">No private LAN interface available</option> : interfaces.map((item) => <option key={item.name} value={item.name}>{item.name} · {item.address}</option>)}
             </select>
@@ -234,7 +244,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
         </div>
       </section>
       <section className="panel" aria-label="Manual proxy listener">
-        <div className="panel-heading"><div><strong>Manual listener</strong><span>Reverse, upstream, SOCKS5, or DNS on this Mac</span></div></div>
+        <div className="panel-heading"><div><strong>Manual listener</strong><span>Reverse, upstream, SOCKS5, or DNS on this computer</span></div></div>
         <div className="selected-device-detail">
           <div className="mock-grid three-column">
             <label className="field-label">Mode<select className="text-input" value={listenerMode} disabled={acting || connection.connected} onChange={(event) => { const mode = event.target.value as ListenerMode["type"]; setListenerMode(mode); setListenerPort(mode === "dns_proxy" ? 8186 : 8185); }}><option value="reverse_proxy">Reverse proxy</option><option value="upstream_proxy">Upstream proxy</option><option value="socks5">SOCKS5 listener</option><option value="dns_proxy">DNS listener</option></select></label>
@@ -242,7 +252,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
             {listenerMode === "reverse_proxy" || listenerMode === "upstream_proxy" ? <label className="field-label">{listenerMode === "reverse_proxy" ? "Target URL" : "Upstream proxy URL"}<input className="text-input" type="url" value={listenerUrl} placeholder={listenerMode === "reverse_proxy" ? "https://example.com or http3://example.com" : "https://proxy.example.com"} disabled={acting || connection.connected} onChange={(event) => setListenerUrl(event.target.value)} /></label> : null}
           </div>
           <p>Configure your development client to use 127.0.0.1:{listenerPort}. DNS overrides apply only to queries sent to the DNS listener; SOCKS5 needs a SOCKS5 client setting.</p>
-          <p className="muted-copy">HTTP/3 capture uses reverse http3:// or Mac local capture. Regular, upstream and SOCKS proxy modes do not capture HTTP/3. QUIC version 1 only; client compatibility varies.</p>
+          <p className="muted-copy">HTTP/3 capture uses reverse http3:// or supported desktop local capture. Regular, upstream and SOCKS proxy modes do not capture HTTP/3. QUIC version 1 only; client compatibility varies.</p>
           <button className="primary" disabled={acting || connection.connected || Boolean(pendingRollback) || !Number.isInteger(listenerPort) || listenerPort < 1024 || listenerPort > 65535 || ((listenerMode === "reverse_proxy" || listenerMode === "upstream_proxy") && !listenerUrl.trim())} onClick={() => {
             const mode: ListenerMode = listenerMode === "reverse_proxy" || listenerMode === "upstream_proxy" ? { type: listenerMode, url: listenerUrl.trim() } : { type: listenerMode };
             void connectTarget({ schemaVersion: 1, type: "proxy_listener", mode, listenPort: listenerPort });
@@ -312,7 +322,7 @@ export function ConnectView({ onOpenTraffic, sharedConnection }: { onOpenTraffic
 
           {connection.connected && connection.captureTarget && !["ios_simulator", "android_emulator"].includes(connection.captureTarget.type) ? (
             <div className="selected-device-detail">
-              <h2>{connection.captureTarget.type === "mac_all" ? "This Mac" : connection.captureTarget.type === "mac_process" ? connection.captureTarget.name : connection.captureTarget.type === "proxy_listener" ? `${connection.captureTarget.mode.type.replaceAll("_", " ")} listener` : "Paired physical device"}</h2>
+              <h2>{["mac_all", "desktop_all"].includes(connection.captureTarget.type) ? "This computer" : (connection.captureTarget.type === "mac_process" || connection.captureTarget.type === "desktop_process") ? connection.captureTarget.name : connection.captureTarget.type === "proxy_listener" ? `${connection.captureTarget.mode.type.replaceAll("_", " ")} listener` : "Paired physical device"}</h2>
               <p>{connection.strategy}</p>
               {connection.proxyHost ? <div className="capability-row"><span>Listener</span><strong>{connection.proxyHost}:{connection.proxyPort}</strong></div> : null}
               {pairingToken ? <div className="capability-row"><span>SDK pairing token</span><code className="pairing-token">{pairingToken}</code></div> : null}

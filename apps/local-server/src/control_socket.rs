@@ -1,61 +1,18 @@
+#[cfg(test)]
+use crate::control_protocol::MAX_REQUEST;
+use crate::control_protocol::{Dispatch, MAX_CONNECTIONS, handle_connection, make_dispatch};
 use app_core::CoreService;
-use core_model::AppError;
-use serde::Deserialize;
-use serde_json::{Value, json};
 use std::{
-    fs,
-    future::Future,
-    io,
+    fs, io,
     os::unix::fs::{FileTypeExt as _, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
-    pin::Pin,
     sync::Arc,
-    time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
     sync::{Semaphore, oneshot},
     task::{JoinHandle, JoinSet},
-    time::timeout,
 };
-
-const MAX_REQUEST: usize = 128 * 1024;
-const MAX_RESPONSE: usize = 16 * 1024 * 1024;
-const MAX_CONNECTIONS: usize = 16;
-const IO_TIMEOUT: Duration = Duration::from_secs(10);
-const INVOKE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-
-const COMMANDS: &[&str] = &[
-    "connect_capture_target",
-    "current_connection",
-    "delete_network_profile",
-    "delete_proxy_rule",
-    "disconnect_device",
-    "export_interchange",
-    "export_workspace",
-    "get_flow_detail",
-    "health",
-    "list_devices",
-    "list_flows",
-    "list_network_profiles",
-    "list_proxy_rules",
-    "list_sessions",
-    "preview_proxy_rule",
-    "search_traffic",
-    "upsert_network_profile",
-    "upsert_proxy_rule",
-];
-
-type DispatchFuture = Pin<Box<dyn Future<Output = Result<Value, AppError>> + Send>>;
-type Dispatch = Arc<dyn Fn(String, Value) -> DispatchFuture + Send + Sync>;
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Request {
-    command: String,
-    args: Value,
-}
 
 pub struct ControlSocket {
     stop: Option<oneshot::Sender<()>>,
@@ -70,10 +27,7 @@ impl ControlSocket {
 }
 
 pub async fn start(core: CoreService, path: PathBuf) -> Result<ControlSocket, String> {
-    let dispatch: Dispatch = Arc::new(move |command, args| {
-        let core = core.clone();
-        Box::pin(async move { core.invoke(&command, args).await })
-    });
+    let dispatch = make_dispatch(core);
     start_with(path, dispatch).await
 }
 
@@ -193,120 +147,10 @@ fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
     stream.peer_cred().map(|credentials| credentials.uid())
 }
 
-async fn handle_connection(stream: UnixStream, dispatch: Dispatch) {
-    let mut stream = stream;
-    let read = timeout(IO_TIMEOUT, async {
-        let mut bytes = Vec::new();
-        (&mut stream)
-            .take((MAX_REQUEST + 1) as u64)
-            .read_to_end(&mut bytes)
-            .await?;
-        Ok::<_, io::Error>(bytes)
-    })
-    .await;
-    let bytes = match read {
-        Ok(Ok(bytes)) if bytes.len() <= MAX_REQUEST => bytes,
-        Ok(Ok(_)) => {
-            let _ = write_json(
-                stream,
-                &error(
-                    "control_request_too_large",
-                    "Control request exceeds 128 KiB.",
-                ),
-            )
-            .await;
-            return;
-        }
-        _ => return,
-    };
-    let request = match serde_json::from_slice::<Request>(&bytes) {
-        Ok(request) if request.args.is_object() => request,
-        _ => {
-            let _ = write_json(
-                stream,
-                &error(
-                    "control_request_invalid",
-                    "Control request must contain a command and object args.",
-                ),
-            )
-            .await;
-            return;
-        }
-    };
-    if !COMMANDS.contains(&request.command.as_str()) {
-        let _ = write_json(
-            stream,
-            &error(
-                "control_command_forbidden",
-                "Command is unavailable through the local control socket.",
-            ),
-        )
-        .await;
-        return;
-    }
-    match timeout(INVOKE_TIMEOUT, dispatch(request.command, request.args)).await {
-        Ok(Ok(value)) => {
-            let bytes = serde_json::to_vec(&value).unwrap_or_else(|_| b"null".to_vec());
-            if bytes.len() > MAX_RESPONSE {
-                let _ = write_json(
-                    stream,
-                    &error(
-                        "control_response_too_large",
-                        "Control response exceeds 16 MiB.",
-                    ),
-                )
-                .await;
-            } else {
-                let _ = write_bytes(stream, &bytes).await;
-            }
-        }
-        Ok(Err(app_error)) => {
-            let _ = write_json(stream, &json!({"error": app_error})).await;
-        }
-        Err(_) => {
-            let _ = write_json(
-                stream,
-                &error(
-                    "control_timeout",
-                    "Control command exceeded its time limit.",
-                ),
-            )
-            .await;
-        }
-    }
-}
-
-fn error(code: &str, message: &str) -> Value {
-    json!({"error":{"code":code,"message":message,"recoverable":false}})
-}
-
-async fn write_json(stream: UnixStream, value: &Value) {
-    let bytes = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
-    let bytes = if bytes.len() <= MAX_RESPONSE {
-        bytes
-    } else {
-        serde_json::to_vec(&error(
-            "control_response_too_large",
-            "Control response exceeds 16 MiB.",
-        ))
-        .unwrap()
-    };
-    let _ = write_bytes(stream, &bytes).await;
-}
-
-async fn write_bytes(mut stream: UnixStream, bytes: &[u8]) -> io::Result<()> {
-    timeout(IO_TIMEOUT, async {
-        stream.write_all(bytes).await?;
-        stream.shutdown().await
-    })
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "control response write timed out"))?
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},

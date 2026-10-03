@@ -304,10 +304,11 @@ export function SettingsView() {
         <div className="import-controls">
           <input
             type="file"
+            aria-label="Workspace import file"
             accept="application/json,.json,.mas.json"
             onChange={(event) => void loadImportFile(event.target.files?.[0] ?? null)}
           />
-          <select value={importMode} onChange={(event) => setImportMode(event.target.value as ImportMode)}>
+          <select aria-label="Workspace import mode" value={importMode} onChange={(event) => setImportMode(event.target.value as ImportMode)}>
             <option value="merge">Merge</option>
             <option value="replace">Replace workspace</option>
           </select>
@@ -317,6 +318,7 @@ export function SettingsView() {
         </div>
         <textarea
           className="bundle-textarea import-textarea"
+          aria-label="Workspace import JSON"
           value={importText}
           onChange={(event) => setImportText(event.target.value)}
           placeholder="Choose a .mas.json file or paste bundle JSON here"

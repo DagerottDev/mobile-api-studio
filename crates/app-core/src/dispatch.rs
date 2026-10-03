@@ -15,6 +15,8 @@ fn output<T: serde::Serialize>(value: T) -> Result<Value, AppError> {
 
 pub async fn invoke(command: &str, args: Value, state: &AppState) -> Result<Value, AppError> {
     match command {
+        "capture_platform_info" => output(crate::capture_platform_info()),
+        "list_desktop_processes" => output(crate::list_desktop_processes()?),
         "preview_share_har" => output(crate::sharing_commands::preview_share_har(input(&args, "flowIds")?, input(&args, "includeQuery")?, input(&args, "includeBodies")?, State(state))?),
         "export_team_workspace" => output(crate::sharing_commands::export_team_workspace(input(&args, "ruleIds")?, input(&args, "fixtureIds")?, input(&args, "includeBodies")?, State(state))?),
         "preview_team_workspace" => output(crate::sharing_commands::preview_team_workspace(input(&args, "artifact")?, State(state))?),
